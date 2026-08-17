@@ -40,6 +40,11 @@
 | [`docs/project/PLAN.md`](docs/project/PLAN.md) | 縦切りと進め方、いまの状態 |
 | [`AGENTS.md`](AGENTS.md) | コーディングエージェント向けの手順書 |
 
+## 出典
+
+- 経路と施設のデータ：東京都都市整備局「新宿駅周辺の施設情報及び移動ルート」（CC BY 4.0）
+- 出口の名前：© OpenStreetMap contributors（ODbL）。`data/annotations/exits.json`
+
 ## 共有場所
 
 - [Figma：Design System](https://www.figma.com/design/9QOfzNGvTkWdmvLVpWPj16/)

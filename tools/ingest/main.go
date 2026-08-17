@@ -225,6 +225,7 @@ func main() {
 	out := flag.String("out", "data/graph", "出力先")
 	version := flag.String("version", "2023-02-20", "配布データの版")
 	hash := flag.String("hash", "", "ZIP の SHA-256")
+	annotationPath := flag.String("annotations", "data/annotations/exits.json", "出口の名前の注釈")
 	flag.Parse()
 
 	var nav navFile
@@ -523,35 +524,75 @@ func main() {
 	}
 	sort.Slice(meetings, func(i, j int) bool { return meetings[i].NodeID < meetings[j].NodeID })
 
-	// 出口。データに出口の名前が無いので、1F の行き止まりノードを候補にする。
-	// これは仮説であり、現地で確認するまで名前は付けない。
-	degree := map[int64]int{}
-	for _, l := range nav.Links {
-		degree[l.N1]++
-		degree[l.N2]++
+	// 出口。データに「出口」という種別は無いが、番号だけの名前を持つ地物が
+	// 地下から 1F までまたがっている。逆ジオコーディングで確かめたところ、
+	// これは出入口番号だった（例: 7 → 京王 新宿駅 7番出入口）。
+	// 番号だけでは利用者に伝わらないので、名前は注釈ファイルで上書きする。
+	numberName := regexp.MustCompile(`^\d{1,2}$`)
+	annotations := map[string]struct {
+		NameJa string `json:"nameJa"`
+	}{}
+	if b, err := os.ReadFile(*annotationPath); err == nil {
+		if err := json.Unmarshal(b, &annotations); err != nil {
+			log.Fatalf("parse %s: %v", *annotationPath, err)
+		}
 	}
+
 	var exits []exitEntry
-	for _, nd := range nav.Nodes {
-		if degree[nd.ID] != 1 {
+	seenExit := map[string]bool{}
+	for _, e := range ce.Entities {
+		name := strings.TrimSpace(e.Properties.Name)
+		if !numberName.MatchString(name) {
 			continue
 		}
-		floorOK := false
-		for _, l := range nd.Links {
-			if levelName[l.LID] == "1F" {
-				floorOK = true
+		// 1 つの番号が複数のジオメトリ（各階）を持つ。地上に出る 1F のものを 1 つ選び、
+		// 座標とノードは必ず同じジオメトリから取る。混ぜると番号と場所がずれる。
+		var nodeID int64
+		var lat, lng float64
+		for _, g := range e.Properties.Geometry {
+			pair, ok := g.([]any)
+			if !ok || len(pair) == 0 {
+				continue
+			}
+			idf, ok := pair[0].(float64)
+			if !ok {
+				continue
+			}
+			gid := int64(idf)
+			gm, ok := geoms[gid]
+			if !ok || gm.Location == nil || len(gm.Location.Coordinates) != 2 {
+				continue
+			}
+			var pick int64
+			for _, nd := range nav.Nodes {
+				for _, l := range nd.Links {
+					if l.GID == gid && levelName[l.LID] == "1F" {
+						if pick == 0 || nd.ID < pick {
+							pick = nd.ID
+						}
+					}
+				}
+			}
+			if pick != 0 {
+				nodeID = pick
+				lng, lat = gm.Location.Coordinates[0], gm.Location.Coordinates[1]
+				break
 			}
 		}
-		if !floorOK {
+		if nodeID == 0 || lat == 0 {
 			continue
 		}
-		ll, ok := nodeLatLng[nd.ID]
-		if !ok {
+		id := strconv.FormatInt(nodeID, 10)
+		if seenExit[id] {
 			continue
 		}
-		id := strconv.FormatInt(nd.ID, 10)
+		seenExit[id] = true
+		nameJa := name + "番出入口"
+		if a, ok := annotations[id]; ok && a.NameJa != "" {
+			nameJa = a.NameJa
+		}
 		exits = append(exits, exitEntry{
-			CatalogID: "exit." + id, NodeID: id,
-			NameJa: "1F 出口（" + id + "）", Lat: ll[0], Lng: ll[1],
+			CatalogID: "exit." + id, NodeID: id, NameJa: nameJa, Lat: lat, Lng: lng,
 		})
 	}
 	sort.Slice(exits, func(i, j int) bool { return exits[i].NodeID < exits[j].NodeID })
