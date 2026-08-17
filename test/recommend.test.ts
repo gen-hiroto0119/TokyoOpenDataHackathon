@@ -18,8 +18,8 @@ describe("代表ケース", () => {
 
   it("順位は 最大負担 → 合計 → 出口までの近さ → 説明しやすさ の順で決まる", () => {
     expect(res.ranked.map((r) => r.meeting.nodeId)).toEqual(["m.board", "m.south", "m.koban"]);
-    expect(res.ranked.map((r) => r.scores.maxDistanceM)).toEqual([310, 320, 330]);
-    expect(res.ranked.map((r) => r.scores.sumDistanceM)).toEqual([860, 890, 920]);
+    expect(res.ranked.map((r) => r.scores.maxDistanceM)).toEqual([290, 300, 310]);
+    expect(res.ranked.map((r) => r.scores.sumDistanceM)).toEqual([840, 870, 900]);
   });
 
   it("理由は実際に効いた段だけを入れる", () => {
@@ -54,9 +54,22 @@ describe("改札は路線から選ぶ", () => {
     );
     expect(entries).toEqual({
       jr: "entry.jr.south",
-      keio: "entry.keio.west",
+      keio: "entry.transfer",
       marunouchi: "entry.marunouchi.west",
     });
+  });
+
+  it("1 つの改札が複数の路線に対応してよい", () => {
+    const shared = fixture.catalog.entries.find((e) => e.catalogId === "entry.transfer")!;
+    expect(shared.lineIds).toEqual(["line.keio", "line.marunouchi"]);
+
+    const res = recommend(fixture, representative);
+    // 京王は連絡改札（130）が西口改札（150）より近いので選ばれる。
+    const keio = res.ranked[0]!.legs.find((l) => l.participantId === "keio")!;
+    expect(keio.entry.nodeId).toBe("g.transfer");
+    // 丸ノ内は西口方面改札（120）の方が近いので、同じ連絡改札は選ばれない。
+    const maru = res.ranked[0]!.legs.find((l) => l.participantId === "marunouchi")!;
+    expect(maru.entry.nodeId).toBe("g.maru.west");
   });
 
   it("改札を直接渡したときは、そのまま使う", () => {
@@ -127,7 +140,7 @@ describe("確認済みノード", () => {
     const keio = top.legs.find((l) => l.participantId === "keio")!;
     expect(jr.entry.nodeId).toBe("branch");
     expect(jr.distanceM).toBe(60);
-    expect(keio.entry.catalogId).toBe("entry.keio.west");
+    expect(keio.entry.catalogId).toBe("entry.transfer");
   });
 
   it("確認済みより手前の確認点は confirmed になる", () => {

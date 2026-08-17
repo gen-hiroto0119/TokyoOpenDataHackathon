@@ -35,7 +35,8 @@ export type Graph = {
 
 export type EntryCatalogEntry = {
   catalogId: string;
-  lineId: string;
+  /** 1 つの改札が複数の路線に対応することがある（連絡改札）。 */
+  lineIds: string[];
   nodeId: string;
   nameJa: string;
 };

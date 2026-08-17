@@ -388,7 +388,8 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
       }
       list = [p.confirmed.id];
     } else if (p.entry.kind === "line") {
-      list = catalog.entries.filter((e) => e.lineId === p.entry.id).map((e) => e.nodeId);
+      const lineId = p.entry.id;
+      list = catalog.entries.filter((e) => e.lineIds.includes(lineId)).map((e) => e.nodeId);
       if (list.length === 0) {
         throw new RecommendError("unknown_line", "路線に対応する改札がありません", {
           participantId: p.id,

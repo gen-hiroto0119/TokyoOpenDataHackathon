@@ -15,6 +15,7 @@ const NODE_SPECS: NodeSpec[] = [
   ["g.jr.south", 0, 200, "JR 南口改札", "B1"],
   ["g.keio.main", 0, 260, "京王線 中央口改札", "B1"],
   ["g.maru.east", 0, 330, "丸ノ内線 東口方面改札", "B1"],
+  ["g.transfer", 0, 160, "京王・丸ノ内線 連絡改札", "B1"],
   ["hall", 100, 150, null, "B1"],
   ["u1", 150, 150, null, "B1"],
   ["branch", 200, 150, null, "B1"],
@@ -41,6 +42,7 @@ const LINK_SPECS: LinkSpec[] = [
   ["l.jr.south", "g.jr.south", "hall", 110],
   ["l.keio.main", "g.keio.main", "hall", 160],
   ["l.maru.east", "g.maru.east", "hall", 210],
+  ["l.transfer", "g.transfer", "hall", 130],
   ["l.hall.u1", "hall", "u1", 50],
   ["l.u1.branch", "u1", "branch", 50],
   ["l.branch.koban", "branch", "m.koban", 80],
@@ -79,21 +81,37 @@ function buildGraph(): Graph {
 
 const catalog: Catalog = {
   entries: [
-    { catalogId: "entry.jr.west", lineId: "line.jr", nodeId: "g.jr.west", nameJa: "JR 西口改札" },
-    { catalogId: "entry.jr.south", lineId: "line.jr", nodeId: "g.jr.south", nameJa: "JR 南口改札" },
-    { catalogId: "entry.keio.west", lineId: "line.keio", nodeId: "g.keio.west", nameJa: "京王線 西口改札" },
-    { catalogId: "entry.keio.main", lineId: "line.keio", nodeId: "g.keio.main", nameJa: "京王線 中央口改札" },
+    { catalogId: "entry.jr.west", lineIds: ["line.jr"], nodeId: "g.jr.west", nameJa: "JR 西口改札" },
+    { catalogId: "entry.jr.south", lineIds: ["line.jr"], nodeId: "g.jr.south", nameJa: "JR 南口改札" },
+    {
+      catalogId: "entry.keio.west",
+      lineIds: ["line.keio"],
+      nodeId: "g.keio.west",
+      nameJa: "京王線 西口改札",
+    },
+    {
+      catalogId: "entry.keio.main",
+      lineIds: ["line.keio"],
+      nodeId: "g.keio.main",
+      nameJa: "京王線 中央口改札",
+    },
     {
       catalogId: "entry.marunouchi.west",
-      lineId: "line.marunouchi",
+      lineIds: ["line.marunouchi"],
       nodeId: "g.maru.west",
       nameJa: "丸ノ内線 西口方面改札",
     },
     {
       catalogId: "entry.marunouchi.east",
-      lineId: "line.marunouchi",
+      lineIds: ["line.marunouchi"],
       nodeId: "g.maru.east",
       nameJa: "丸ノ内線 東口方面改札",
+    },
+    {
+      catalogId: "entry.transfer",
+      lineIds: ["line.keio", "line.marunouchi"],
+      nodeId: "g.transfer",
+      nameJa: "京王・丸ノ内線 連絡改札",
     },
   ],
   meetings: [
