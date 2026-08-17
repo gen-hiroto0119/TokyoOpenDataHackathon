@@ -435,26 +435,74 @@ func main() {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].CatalogID < entries[j].CatalogID })
 
-	// 集合候補。名前があるだけでは足りない。
-	// 名前のある unit を全部拾うと、店舗が候補になる。店舗は入れ替わるし、
-	// 仕様書にも「調査当時の情報であり、店舗や出入口は現状と違うことがある」と書いてある。
-	// PRODUCT.md は「名前と見た目で説明できるランドマーク」を求めているので、
-	// 待ち合わせの目印になる種類に絞る。すべて hypothesis とし、現地で確認する。
-	meetingName := regexp.MustCompile(`交番|広場|案内所|インフォメーション|待合|コンコース|ホール|改札|Information|Square|Plaza|Concourse`)
+	// 集合候補。名前のあるノードを広く拾う。店舗も入れる。
+	// 「スタバの前で」は実際によく使う待ち合わせ方で、看板があるぶん初見でも見つけやすい。
+	// 交番や広場だけに絞ると候補が薄くなり、全員の負担が偏らない地点を選べなくなる。
+	//
+	// ただし仕様書は「調査当時の情報であり、店舗や出入口は現状と違うことがある」と書いている。
+	// 潰れた店を指定すると現地で見つからない。だから
+	//   - 全部 evidence: hypothesis とし、現地で確認したものだけ上げる
+	//   - 説明しやすさで階層を付け、同点なら交番・広場・案内所が店舗に勝つようにする
+	// 学習ではなく、ここで決めた順位。
+	// 名前として使えないものを外す。
+	// 番線番号（"11"）、区画コード（"D10"、"A1"）、内部 ID（"Unit B3F-115"）は
+	// 現地の案内表示と照らし合わせられないので、集合場所にできない。
+	codeName := regexp.MustCompile(`^[0-9]+$|^[A-Za-z]$|^[0-9A-Za-z][0-9A-Za-z\-\. ]{0,3}$|^(?i:Unit\s?[0-9A-Za-z]*-?[0-9]+)$`)
+	// 立って待つ場所ではないもの。
+	privateName := regexp.MustCompile(`おむつ|オムツ|授乳|multipurpose|Nursing`)
+	// 設備の一般名。駅に同じものが何個もあるので、言われても特定できない。
+	genericName := regexp.MustCompile(`(?i)^ATM|券売機|精算機|コインロッカー|ロッカー|休憩所|待合室|トイレ|化粧室|お手洗|エレベーター|エスカレーター|階段|喫煙|自動販売機|給湯|AED|Vending|Locker|Restroom|Toilet|Elevator|Escalator|Stairs`)
+
+	explainOf := func(name string) int {
+		switch {
+		case strings.Contains(name, "交番"):
+			return 5
+		case strings.Contains(name, "案内所") || strings.Contains(name, "インフォメーション"):
+			return 4
+		case strings.Contains(name, "広場") || strings.Contains(name, "コンコース"):
+			return 3
+		case strings.Contains(name, "改札"):
+			return 2
+		default: // 店舗など。入れ替わりうるので一番下。
+			return 1
+		}
+	}
+	// 同じ名前が駅に何個もある地点は候補にしない。
+	// 「◯◯の前で」と言われても、どれのことか分からない。
+	// PRODUCT.md の評価 5 が求めている「固有性」はここで効かせる。
+	nameCount := map[string]int{}
+	for gid := range geoms {
+		if n := displayName(gid); n != "" {
+			nameCount[n]++
+		}
+	}
+
 	var meetings []meetingEntry
 	seenMeeting := map[string]bool{}
+	var droppedDuplicate int
 	for gid, f := range geoms {
 		name := displayName(gid)
-		if name == "" || !meetingName.MatchString(name) {
+		if name == "" || codeName.MatchString(name) || privateName.MatchString(name) {
+			continue
+		}
+		if genericName.MatchString(name) {
+			continue
+		}
+		if nameCount[name] > 1 {
+			droppedDuplicate++
 			continue
 		}
 		// 出場専用の改札は集合場所にしない。そこへ向かう人が入れない。
 		if exitOnly.MatchString(name) || exitOnly.MatchString(f.Properties.DisplayName) {
 			continue
 		}
+		// 通路・壁・線路などは候補にしない。立って待てる場所だけ。
 		switch f.Properties.Facility {
 		case "unit", "hallway", "":
 		default:
+			continue
+		}
+		if f.Properties.Traffic != "" {
 			continue
 		}
 		ids := gidNodes[gid]
@@ -468,19 +516,9 @@ func main() {
 		}
 		seenMeeting[nodeID] = true
 		cid := "meet." + strconv.FormatInt(gid, 10)
-		// 交番や広場は改札より説明しやすい。学習ではなく、決めた順位。
-		explain := 1
-		switch {
-		case strings.Contains(name, "交番"):
-			explain = 4
-		case strings.Contains(name, "案内所") || strings.Contains(name, "インフォメーション"):
-			explain = 3
-		case strings.Contains(name, "広場"):
-			explain = 2
-		}
 		meetings = append(meetings, meetingEntry{
 			CatalogID: &cid, NodeID: nodeID, NameJa: name,
-			Explainability: explain, Evidence: "hypothesis",
+			Explainability: explainOf(name), Evidence: "hypothesis",
 		})
 	}
 	sort.Slice(meetings, func(i, j int) bool { return meetings[i].NodeID < meetings[j].NodeID })
@@ -553,6 +591,7 @@ func main() {
 
 	fmt.Printf("\nnodes=%d links=%d(expanded)\n", len(nodes), len(links))
 	fmt.Printf("entries=%d meetings=%d exits=%d\n", len(entries), len(meetings), len(exits))
+	fmt.Printf("同じ名前が複数あって候補から外した地点: %d\n", droppedDuplicate)
 	byLine := map[string]int{}
 	for _, e := range entries {
 		for _, l := range e.LineIDs {
