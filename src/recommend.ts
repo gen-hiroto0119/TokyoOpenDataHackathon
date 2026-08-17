@@ -97,9 +97,59 @@ type Reached = {
   sourceId: string;
 };
 
+/** (距離, nodeId) の順に取り出す最小ヒープ。取り出す順が決まれば結果も決まる。 */
+class Heap {
+  private readonly items: { id: string; d: number }[] = [];
+
+  private less(a: { id: string; d: number }, b: { id: string; d: number }): boolean {
+    if (a.d !== b.d) return a.d < b.d;
+    return a.id < b.id;
+  }
+
+  push(item: { id: string; d: number }): void {
+    this.items.push(item);
+    let i = this.items.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!this.less(this.items[i]!, this.items[parent]!)) break;
+      [this.items[i], this.items[parent]] = [this.items[parent]!, this.items[i]!];
+      i = parent;
+    }
+  }
+
+  pop(): { id: string; d: number } | undefined {
+    const top = this.items[0];
+    if (top === undefined) return undefined;
+    const last = this.items.pop()!;
+    if (this.items.length > 0) {
+      this.items[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1;
+        const r = l + 1;
+        let small = i;
+        if (l < this.items.length && this.less(this.items[l]!, this.items[small]!)) small = l;
+        if (r < this.items.length && this.less(this.items[r]!, this.items[small]!)) small = r;
+        if (small === i) break;
+        [this.items[i], this.items[small]] = [this.items[small]!, this.items[i]!];
+        i = small;
+      }
+    }
+    return top;
+  }
+
+  get size(): number {
+    return this.items.length;
+  }
+}
+
 /**
- * 多点始点の最短距離。同じ距離のときは始点・経路とも nodeId の辞書順で決める。
- * 同じ入力なら同じ結果になる。
+ * 多点始点の最短距離。
+ *
+ * 距離が縮まるときだけ先行ノードを書き換える。同じ距離で書き換えると、
+ * 先行ノードの鎖が輪になって経路をたどれなくなる。
+ * 同点の決着は取り出す順（距離 → nodeId）が付ける。始点が並んだときは
+ * nodeId の辞書順で先に取り出されたものが勝つ。同じ入力なら同じ結果になる。
  */
 function shortestFrom(
   starts: string[],
@@ -108,20 +158,16 @@ function shortestFrom(
   p: Passability,
 ): Map<string, Reached> {
   const best = new Map<string, Reached>();
-  const queue: { id: string; d: number }[] = [];
+  const queue = new Heap();
 
-  for (const s of [...starts].sort()) {
-    const current = best.get(s);
-    if (!current || s < current.sourceId) {
-      best.set(s, { distanceM: 0, prevNodeId: null, prevLinkId: null, sourceId: s });
-    }
+  for (const s of [...new Set(starts)].sort()) {
+    best.set(s, { distanceM: 0, prevNodeId: null, prevLinkId: null, sourceId: s });
     queue.push({ id: s, d: 0 });
   }
 
   const done = new Set<string>();
-  while (queue.length > 0) {
-    queue.sort((a, b) => (a.d !== b.d ? a.d - b.d : a.id < b.id ? -1 : 1));
-    const head = queue.shift();
+  while (queue.size > 0) {
+    const head = queue.pop();
     if (!head) break;
     if (done.has(head.id)) continue;
     done.add(head.id);
@@ -129,25 +175,19 @@ function shortestFrom(
     if (!from) continue;
 
     for (const edge of adjacency.get(head.id) ?? []) {
+      if (done.has(edge.to)) continue;
       const link = links.get(edge.linkId);
       if (!link || !passable(link, p)) continue;
       const next = from.distanceM + link.distanceM;
       const known = best.get(edge.to);
-      const better =
-        !known ||
-        next < known.distanceM - EPS ||
-        (Math.abs(next - known.distanceM) <= EPS &&
-          (from.sourceId < known.sourceId ||
-            (from.sourceId === known.sourceId && head.id < (known.prevNodeId ?? "￿"))));
-      if (better) {
-        best.set(edge.to, {
-          distanceM: next,
-          prevNodeId: head.id,
-          prevLinkId: edge.linkId,
-          sourceId: from.sourceId,
-        });
-        queue.push({ id: edge.to, d: next });
-      }
+      if (known && next >= known.distanceM - EPS) continue;
+      best.set(edge.to, {
+        distanceM: next,
+        prevNodeId: head.id,
+        prevLinkId: edge.linkId,
+        sourceId: from.sourceId,
+      });
+      queue.push({ id: edge.to, d: next });
     }
   }
   return best;
@@ -156,8 +196,11 @@ function shortestFrom(
 function tracePath(target: string, reached: Map<string, Reached>): { nodeIds: string[]; linkIds: string[] } {
   const nodeIds: string[] = [];
   const linkIds: string[] = [];
+  const seen = new Set<string>();
   let cursor: string | null = target;
   while (cursor !== null) {
+    if (seen.has(cursor)) throw new Error(`path cycle at ${cursor}`);
+    seen.add(cursor);
     nodeIds.push(cursor);
     const step: Reached | undefined = reached.get(cursor);
     if (!step || step.prevNodeId === null) break;

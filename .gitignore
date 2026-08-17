@@ -11,3 +11,4 @@ dist/
 
 data/raw/
 *.zip
+data/graph/

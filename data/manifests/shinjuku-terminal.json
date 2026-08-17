@@ -1,0 +1,21 @@
+{
+  "datasetId": "tokyo.shinjuku-terminal",
+  "title": "新宿駅周辺の施設情報及び移動ルート",
+  "publisher": "東京都都市整備局",
+  "license": "CC BY 4.0",
+  "attributionJa": "東京都都市整備局「新宿駅周辺の施設情報及び移動ルート」（CC BY 4.0）",
+  "sourceUrl": "https://www.toshiseibi.metro.tokyo.lg.jp/kiban/shinjuku_terminal/pdf/shisetsu_root.zip",
+  "catalogUrl": "https://catalog.data.metro.tokyo.lg.jp/dataset/t000008d0000000037",
+  "specUrl": "https://www.toshiseibi.metro.tokyo.lg.jp/kiban/shinjuku_terminal/pdf/shisetsu_siyousho.pdf",
+  "retrievedAt": "2026-08-17",
+  "publishedAt": "2023-02-20",
+  "sha256": "fc3466270c08593a300e652c7997021f85151bf0f435e17ee9fcb7935ed4ba31",
+  "bytes": 2317035,
+  "files": 25,
+  "notes": [
+    "ZIP 内のファイル名は CP932。展開時に読み替える。",
+    "歩行経路の正は v5_nav.json。ノード 2,506、リンク 2,653。",
+    "日本語の名前は com-entity.geojson にあり、ジオメトリ ID で結ぶ。",
+    "ZIP と展開結果はリポジトリに入れない（.gitignore）。"
+  ]
+}
