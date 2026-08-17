@@ -9,6 +9,7 @@
 - 実行計画: `docs/project/PLAN.md`
 - 推薦 API: `docs/engineering/RECOMMENDER.md`
 - 調査根拠: `docs/research/RESEARCH.md`
+- データの棚卸し: `docs/research/DATA-INVENTORY.md`
 - UI: [Figma の Design System](https://www.figma.com/design/9QOfzNGvTkWdmvLVpWPj16/)（Foundations と Components）。`Concept Display` は探索用であり、実装の正本にしない。
 
 仕様が必要なら上記を読み、ここに複製しない。調査メモでは事実と仮説を分けて扱う。

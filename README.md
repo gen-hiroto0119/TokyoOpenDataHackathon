@@ -36,7 +36,8 @@
 | [`docs/product/PRODUCT.md`](docs/product/PRODUCT.md) | 解く問題、利用体験、集合地点の評価、MVP、成功条件 |
 | [`docs/product/SCREENS.md`](docs/product/SCREENS.md) | 画面と部品。決めたことと採らなかったこと |
 | [`docs/engineering/RECOMMENDER.md`](docs/engineering/RECOMMENDER.md) | 推薦 API の HTTP 契約と計算 |
-| [`docs/research/RESEARCH.md`](docs/research/RESEARCH.md) | データ出典、ローカル解析、屋内測位の制約 |
+| [`docs/research/RESEARCH.md`](docs/research/RESEARCH.md) | データ出典、屋内測位の制約、Live AI の検討 |
+| [`docs/research/DATA-INVENTORY.md`](docs/research/DATA-INVENTORY.md) | 実データを取り込んで数えた棚卸し。機能ごとの可否 |
 | [`docs/project/PLAN.md`](docs/project/PLAN.md) | 縦切りと進め方、いまの状態 |
 | [`AGENTS.md`](AGENTS.md) | コーディングエージェント向けの手順書 |
 
