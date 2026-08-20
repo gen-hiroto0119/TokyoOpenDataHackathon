@@ -138,6 +138,10 @@ type UpdateRoomRequest = {
 
 **入力が足りないときは 409 を返す。** 2 人以上が `entry` を入れていることが条件。誰が足りないかを `details` に入れる。
 
+**目的地がプリセットでないときは 409 `preset_destination_required` を返す。** 推薦の契約はカタログの目的地だけを受ける。Places で選んだ目的地(`catalogId` が null)への対応は、`destination` に名前と座標の形を足す契約拡張とセットで入れる。
+
+**`?limit` で `ranked` を上位に絞れる。既定は 10。** 形は変えず件数だけ絞る。`meetingNodeId` が決まっているときは、その候補が圏外でも必ず含める。`infeasible` は絞らない。全候補に `legs` を付けた応答は数 MB になるため、画面はこの口だけを使う。
+
 推薦そのものはルームに保存しない。人が増えたり到着情報が変わったりするたびに変わるので、都度計算する。決まった集合場所だけが `meetingNodeId` として残る。
 
 ## エラー
@@ -149,6 +153,7 @@ type UpdateRoomRequest = {
 | 403 | `forbidden` | 他人の情報を書こうとした、主催者でないのに主催者の操作をした |
 | 404 | `room_not_found` | ルームが無い |
 | 409 | `not_enough_participants` | 推薦に必要な入力が揃っていない |
+| 409 | `preset_destination_required` | 目的地がプリセットでない |
 | 410 | `room_expired` | 期限を過ぎた |
 
 ## 実装

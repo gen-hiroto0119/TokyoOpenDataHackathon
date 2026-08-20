@@ -68,6 +68,10 @@ type GraphNode = {
   levelIds: string[];
   geomIds: string[];
   nameJa: string | null;
+  floorLabel: string | null;
+  /** 駅ローカルの平面座標(m)。y+ は北。手順の方向と模式図に使う。 */
+  x: number;
+  y: number;
 };
 
 type GraphLink = {
@@ -84,6 +88,7 @@ type Graph = {
   datasetId: "tokyo.shinjuku-terminal";
   datasetVersion: string;
   graphHash: string;
+  attributionJa: string;
   nodes: GraphNode[];
   links: GraphLink[];
 };
@@ -106,7 +111,7 @@ HTTP は安定 ID を使う。東京都のノード ID は取り込み後にカ�
 
 通路上の無名ノードは候補にしない。そのうえで、名前があるだけでも足りない。
 
-**店舗は入れる。** 「◯◯の前で」は実際によく使う待ち合わせ方で、看板があるぶん初見でも見つけやすい。交番や広場だけに絞ると候補が薄くなり、全員の負担が偏らない地点を選べない。実データで確かめると、店舗を入れたときの候補は 20 件から 251 件になり、代表ケースの最長距離は 200m から 180m に縮んだ。
+**店舗は入れる。** 「◯◯の前で」は実際によく使う待ち合わせ方で、看板があるぶん初見でも見つけやすい。交番や広場だけに絞ると候補が薄くなり、全員の負担が偏らない地点を選べない。実データで確かめると、店舗を入れたときの候補は 20 件から 242 件になり、代表ケースの最長距離は 200m から 180m に縮んだ。
 
 **同じ名前が駅に複数ある地点は外す。** 「ATM の前で」「券売機の前で」と言われても、新宿の地下にはいくつもある。`PRODUCT.md` の評価 5 が求める「固有性」はここで効かせる。名前の出現回数を数えて 1 件のものだけ残す。実データで 58 件が外れた。
 
@@ -153,7 +158,7 @@ type EntryCatalogEntry = {
 
 ### 出口の選び方
 
-**出口は `marker=entrance` の地物 96 件から取る。** 92 件がカタログに載る。拾い方と取りこぼしは [`DATA.md`](./DATA.md)。
+**出口は `marker=entrance` の地物 96 件から取る。** 人が全件を見て 69 件がカタログに載る。拾い方と取りこぼしは [`DATA.md`](./DATA.md)。
 
 **名前は看板のとおりに出す。修飾しない。** 番号は事業者ごとに振り直されていて、新宿駅に「7番出入口」は 3 つある。ただし曖昧なのは口頭で場所を指すときの話で、この案内では違う。利用者はすでに集合していて、こちらが出した経路をたどって一緒に歩く。目の前の看板の「7」を見つければよく、どの事業者の 7 番かを知る必要がない。歩かせている限り、文脈はこちらが供給している。
 
@@ -176,7 +181,7 @@ type ExitCatalogEntry = {
   ＋ 看板の文字が無ければ 60m
 ```
 
-出口ごとに探索を回すと 92 回になる。後ろ 2 項を各出口の持ち出しコストにし、**逆方向の隣接で全出口から多点始点最短を一度だけ回す。** 順方向で出口から探索すると、歩く向きが逆になる。手順は [`CORE.md`](./CORE.md)。選ばれた出口は `sourceId` が持っている。応答の `onward.distanceM` は持ち出しぶんを引いて、実際に歩く距離だけにする。`onward.pathNodeIds` は集合場所始まり、出口終わり。
+出口ごとに探索を回すと出口の件数ぶん(69 回)になる。後ろ 2 項を各出口の持ち出しコストにし、**逆方向の隣接で全出口から多点始点最短を一度だけ回す。** 順方向で出口から探索すると、歩く向きが逆になる。手順は [`CORE.md`](./CORE.md)。選ばれた出口は `sourceId` が持っている。応答の `onward.distanceM` は持ち出しぶんを引いて、実際に歩く距離だけにする。`onward.pathNodeIds` は集合場所始まり、出口終わり。
 
 **1.35 は市街地の迂回率。** 直線のまま足すと、駅の反対側にある目的地への地上ぶんを大きく短く見積もる。西口から歌舞伎町は直線 600m だが、実際は駅を回り込む。その結果「早く外に出た方が得」に倒れ、遠い側の出口が選ばれなくなる。
 
@@ -199,9 +204,38 @@ type ExitCatalogEntry = {
 
 ## HTTP 契約
 
-`POST /v1/recommendations`
-
 `Content-Type: application/json`。認証はハッカソン提出までは付けない。出発地の緯度経度、住所、連続 GPS は受け付けない。スキーマにその欄を置かない。
+
+### `GET /v1/catalog`
+
+路線（JR / 京王 / 丸ノ内）と目的地プリセット。グラフ・改札・集合候補・出口は出さない。画面がカタログ ID をハードコードしないため。
+
+```ts
+type CatalogLine = {
+  id: string;
+  nameJa: string;
+};
+
+type CatalogDestination = {
+  catalogId: string;
+  nameJa: string;
+  lat: number;
+  lng: number;
+};
+
+type CatalogResponse = {
+  lines: CatalogLine[];
+  destinations: CatalogDestination[];
+};
+```
+
+`lines[].id` は `LineRef.id`（`line.jr` / `line.keio` / `line.marunouchi`）。`destinations` は取り込み後のプリセット。
+
+### `GET /health`
+
+`{ ok: true, datasetVersion: string }`。載っているグラフの版。
+
+### `POST /v1/recommendations`
 
 ### リクエスト
 
@@ -243,7 +277,7 @@ type RecommendationRequest = {
 - `participants` は 2 人以上。代表ケースは 3 人。
 - `entry` は開始点であり、出発地ではない。既定は `LineRef`（路線）で、その路線の改札のうち一番近いものをこちらが選ぶ。改札が分かっている場合だけ `CatalogRef` か `NodeRef` を渡す。
 - `confirmed` がある人は、そのノードを新たな開始点として残経路を計算する。元経路上にある必要はない（迷ったあとの復帰）。
-- `asOf` は ISO 8601。省略時は時間帯制約を掛けない。
+- `asOf` は ISO 8601。時刻は日本の壁時計として字面の HH:MM を読む(オフセットは見ない)。省略時は時間帯制約を掛けない。
 - `constraints.accessibility` の省略時は `any`。
 
 代表ケースの例。
@@ -271,7 +305,8 @@ type ReasonCode =
   | "onward"
   | "landmark"
   | "step_free"
-  | "hours";
+  | "hours"
+  | "unreachable";
 
 type ConfirmationKind = "gate" | "floor" | "landmark" | "branch";
 type ConfirmationStatus = "pending" | "confirmed" | "skipped";
@@ -295,6 +330,9 @@ type Step = {
   vertical: StepVertical;
   distanceM: number;
   floorLabel: string | null;
+  /** 駅ローカルの平面座標(m)。y+ は北。欠損は補間済みで、必ず値が入る。 */
+  x: number;
+  y: number;
 };
 
 type Leg = {
@@ -330,6 +368,8 @@ type MeetingCandidate = {
   onward: {
     distanceM: number;
     pathNodeIds: string[];
+    pathLinkIds: string[];
+    steps: Step[];
     exit: {
       nodeId: string;
       catalogId: string;
@@ -362,6 +402,8 @@ type RecommendationResponse = {
 - `entry` はその人に選ばれた改札。`entry` に路線を渡したときは、こちらが選んだものが入る。画面はこれを経路の最初の手順として出す。
 - `explainability` はカタログに書いた整数（大きいほど説明しやすい）。学習しない。
 - `onward` は集合したあと全員で地上へ出るまで。`distanceM` は集合場所から出口までの徒歩距離で、出口選びに使った見積もりは含まない。
+- `onward.steps` は集合場所→出口の手順。最初は集合場所、末尾は出口。`onward.pathLinkIds` は `pathNodeIds` と同じ向き。
+- `infeasible[].reason` は落ちた原因。`step_free`(段差なし制約)、`hours`(時間帯)、`unreachable`(制約を外しても届かない=グラフの欠け)。`unreachable` は `infeasible` 専用で、`ranked` の理由には使わない。
 - `onward.exit.label` は看板の文字。空のこともある。画面はこれをそのまま出す。言い換えない。
 - `onward.exit.evidence` は名前の確からしさ。`checked` は人が見て確かめたもの、`hypothesis` は取り込んだだけのもの。**画面は後者を断定して書かず、直せる導線を出す。**
 - `mapsDirUrl` は出口を出たあとに開く Google Maps の徒歩経路 URL。Routes API は使わない。街路の折れ線も返さない。
@@ -375,6 +417,9 @@ type RecommendationResponse = {
 - 区切りの間の無名ノードは 1 つの `kind: "move"` にまとめ、`distanceM` は合計にする
 - 区切りのノードは `kind: "landmark"` にして `nameJa` を入れる
 - `turn` は前の辺と次の辺の角度から決める。しきい値はコードに固定し、学習しない
+- 角度は「座標が異なる直近のノード」で取る。同じ地物に寄って同一座標に潰れたノード列で、実在の曲がりを直進と誤らない
+- 座標の取れないノードは経路の前後の実座標から補間し、`x`,`y` に欠損値((0,0) センチネル)を出さない
+- 巨大な地物の代表点への往復(連続する辺のなす角が 160° を超える尖り)は、実在しない迂回なので座標列と角度判定から除く
 - `vertical` は `dz !== 0` の辺の種別。取れないときは `stairs` 扱いにせず、段差なし制約で通行不可にした方針に合わせる
 
 最初の `steps` は必ずその人の改札（`entry`）になる。
@@ -392,8 +437,10 @@ type RecommendationResponse = {
 
 | HTTP | code | とき |
 |---|---|---|
+| 400 | `invalid_request` | JSON がスキーマに合わない(欄の欠け・型違い) |
 | 400 | `unknown_catalog` | カタログ ID が無い |
 | 400 | `unknown_node` | ノード ID がグラフに無い |
+| 400 | `unknown_line` | 路線に対応する改札が無い |
 | 400 | `invalid_participants` | 人数不足、ID 重複 |
 | 409 | `dataset_mismatch` | ワーカーが持つデータセットと `datasetId` が違う |
 | 422 | `disconnected` | 開始点から MEETABLE へ届く人が欠けている |
@@ -407,12 +454,12 @@ type RecommendationResponse = {
 
 構内で出すのは改札→集合場所と、集合場所→出口。目的地はグラフ外で、出口の持ち出しコストにだけ使う。集合場所を先に一点決めてからルートを足すのではなく、全候補を採点してから並べる。
 
-並べ方は `PRODUCT.md` の順。同点だけ次へ進む。デモ用に順位を揺らさない。`reasons` は実際に効いた段だけを入れる。文言はコードから組み立て、その場の散文をモデルに書かせない。
+並べ方は `PRODUCT.md` の順。同点だけ次へ進む。デモ用に順位を揺らさない。`reasons` は 1 位にだけ入れ、実際に効いた段だけを入れる(2 位以降は空。[`CORE.md`](./CORE.md) の採点)。文言はコードから組み立て、その場の散文をモデルに書かせない。
 
 ## 実行
 
 - Cloudflare Workers 上の Hono。
-- グラフは Worker 起動時に読み、リクエストごとにパースし直さない。
+- グラフとカタログは `apps/worker/data/*.json` を起動時に import する。リクエストごとにパースし直さない。
 - この API の経路に Durable Object を置かない。
 - 計算は Isolate 内の TypeScript。WASM 化は縦切りのあとで、同じ入出力契約のまま入れ替える。
 
@@ -430,6 +477,7 @@ type RecommendationResponse = {
 7. 目的地を変えると出口が変わり、`onward.exit.label` に看板の文字が入る。
 8. 同じ JSON を二度投げてバイト一致（順位と理由）。
 9. 片方向の辺で、集合場所→出口と出口→集合場所が一致しないとき、`onward` は集合場所→出口を使う。`pathNodeIds` は集合場所始まり。
+10. `onward.steps` の最初は集合場所、末尾は出口。各 leg と onward の `steps[].distanceM` の和が、その区間の `distanceM` に一致する。`steps[].x`,`y` に (0,0) の欠損値が出ない。
 
 ZIP 取り込み後に、同じ契約で実データテストを足す。ゴールデンのノード ID はカタログ経由にし、取り込みのたびに生 ID をテストへ直書きしない。
 
@@ -440,7 +488,9 @@ ZIP 取り込み後に、同じ契約で実データテストを足す。ゴー�
 | `apps/worker/src/contract.ts` | この文書の HTTP 契約の型。正本はこの文書で、コードは写し |
 | `apps/worker/src/graph.ts` | 前処理後の内部グラフと地点カタログ。順方向・逆方向の隣接、次数 |
 | `apps/worker/src/recommend.ts` | 通行可能性、多点始点最短、順位付け、手順、確認点。計算は [`CORE.md`](./CORE.md) |
-| `apps/worker/src/index.ts` | Hono の口。ステートレス |
+| `apps/worker/src/index.ts` | Hono の口。起動時にデータセットを載せる。ステートレス |
+| `apps/worker/data/graph.json` | 取り込み後のナビ網 |
+| `apps/worker/data/catalog.json` | 改札・集合候補・出口・目的地 |
 | `apps/worker/test/fixture.ts` | 小さな固定グラフ（改札 7・3 路線、集合候補 3、出口 2、階段 1 本） |
 | `apps/worker/test/recommend.test.ts` | ゴールデンテスト |
 
