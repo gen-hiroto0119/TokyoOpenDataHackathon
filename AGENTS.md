@@ -7,6 +7,7 @@
 - プロダクト方針: `docs/PRODUCT.md`
 - 画面一覧と範囲: `docs/SCREENS.md`
 - 推薦 API: `docs/RECOMMENDER.md`
+- 経路の計算: `docs/CORE.md`
 - 調査根拠: `docs/RESEARCH.md`
 - データの棚卸し: `docs/DATA.md`
 - UI: [Figma の Design System](https://www.figma.com/design/9QOfzNGvTkWdmvLVpWPj16/)（Foundations と Components）。`Concept Display` は探索用であり、実装の正本にしない。

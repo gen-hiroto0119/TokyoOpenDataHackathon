@@ -59,7 +59,7 @@ MVPは説明できない合成点ではなく、次の順で候補を並べま�
 
 提出できる公開 Web を先に完成させ、WASM・OCR・Live AI・3D は縦切りを壊さず足す。
 
-API と画面は分けて進める。API の正本は [`RECOMMENDER.md`](./RECOMMENDER.md)、画面と部品の正本は [`SCREENS.md`](./SCREENS.md) と Figma。課題は [Linear の TOK](https://linear.app/hirotofurugen/team/TOK/overview) で管理する。
+API と画面は分けて進める。API の正本は [`RECOMMENDER.md`](./RECOMMENDER.md)、計算の正本は [`CORE.md`](./CORE.md)、画面と部品の正本は [`SCREENS.md`](./SCREENS.md) と Figma。課題は [Linear の TOK](https://linear.app/hirotofurugen/team/TOK/overview) で管理する。
 
 ## 差別化
 

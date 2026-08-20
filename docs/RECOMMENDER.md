@@ -2,7 +2,7 @@
 
 ここでいう推薦は、経路グラフ上の集合地点の順位付けである。LLM による推論や案内板の Vision はこのサービスの外に置く。
 
-トラック A（[TOK-9](https://linear.app/hirotofurugen/issue/TOK-9)〜[TOK-12](https://linear.app/hirotofurugen/issue/TOK-12)）の設計正本。プロダクト方針は [`PRODUCT.md`](./PRODUCT.md)、実データの中身は [`DATA.md`](./DATA.md)、調査根拠は [`RESEARCH.md`](./RESEARCH.md)。
+トラック A（[TOK-9](https://linear.app/hirotofurugen/issue/TOK-9)〜[TOK-12](https://linear.app/hirotofurugen/issue/TOK-12)）の HTTP 契約の正本。計算の手順と向きは [`CORE.md`](./CORE.md)。プロダクト方針は [`PRODUCT.md`](./PRODUCT.md)、実データの中身は [`DATA.md`](./DATA.md)、調査根拠は [`RESEARCH.md`](./RESEARCH.md)。
 
 ## 範囲
 
@@ -176,7 +176,7 @@ type ExitCatalogEntry = {
   ＋ 看板の文字が無ければ 60m
 ```
 
-出口ごとに探索を回すと 92 回になる。**各出口の持ち出しコストに後ろ 2 項を積んで、多点始点最短を一度だけ回す。** 選ばれた出口は `sourceId` が持っている。応答の `onward.distanceM` は持ち出しぶんを引いて、実際に歩く距離だけにする。
+出口ごとに探索を回すと 92 回になる。後ろ 2 項を各出口の持ち出しコストにし、**逆方向の隣接で全出口から多点始点最短を一度だけ回す。** 順方向で出口から探索すると、歩く向きが逆になる。手順は [`CORE.md`](./CORE.md)。選ばれた出口は `sourceId` が持っている。応答の `onward.distanceM` は持ち出しぶんを引いて、実際に歩く距離だけにする。`onward.pathNodeIds` は集合場所始まり、出口終わり。
 
 **1.35 は市街地の迂回率。** 直線のまま足すと、駅の反対側にある目的地への地上ぶんを大きく短く見積もる。西口から歌舞伎町は直線 600m だが、実際は駅を回り込む。その結果「早く外に出た方が得」に倒れ、遠い側の出口が選ばれなくなる。
 
@@ -403,33 +403,11 @@ type RecommendationResponse = {
 
 ## 計算
 
-全員について、通行可能な辺だけで最短距離（`dm` の和）を取る。始点の決め方は次の順。
+手順と向きの正本は [`CORE.md`](./CORE.md)。
 
-1. `confirmed` があればそのノード 1 点
-2. `entry` が改札（`CatalogRef` / `NodeRef`）ならそのノード 1 点
-3. `entry` が路線（`LineRef`）ならその路線の改札すべてを始点にした多点始点最短
+構内で出すのは改札→集合場所と、集合場所→出口。目的地はグラフ外で、出口の持ち出しコストにだけ使う。集合場所を先に一点決めてからルートを足すのではなく、全候補を採点してから並べる。
 
-3 の場合、その人の距離は「どの改札を使っても一番短い値」になる。選ばれた改札は `legs[].entry` に入れて返す。同じ距離なら `nodeId` の辞書順。
-
-候補ごとに全員分の距離を求める。
-
-通行可能。
-
-1. 向きが合っている。
-2. `asOf` があるとき、時間帯外の辺は使わない。
-3. `step_free` のとき、`vertical` が `stairs` / `escalator` / `unknown` の辺は使わない。エレベーターは時間帯内なら使う。
-
-並べ方は `PRODUCT.md` の順で、同点だけ次へ進む。
-
-1. 全員が候補へ届き、必須のアクセシビリティを満たす。
-2. 全員のうち最大の `distanceM` が最小。
-3. 全員の `distanceM` の和が最小。
-4. 集合場所から出口までの `onwardDistanceM` が最小。
-5. `explainability` が大きい。
-
-それでも同点なら `nodeId` の辞書順。デモ用に順位を揺らさない。
-
-`reasons` は実際に効いた段だけを入れる。例: 最大負担で一位が決まったら `minimax` を入れ、合計は入れない。段差なし指定があるときだけ `step_free` を入れる。文言はコードから組み立て、その場の散文をモデルに書かせない。
+並べ方は `PRODUCT.md` の順。同点だけ次へ進む。デモ用に順位を揺らさない。`reasons` は実際に効いた段だけを入れる。文言はコードから組み立て、その場の散文をモデルに書かせない。
 
 ## 実行
 
@@ -451,6 +429,7 @@ type RecommendationResponse = {
 6. `steps` で無名ノードが 1 つの `move` にまとまり、名前のあるノードで区切られる。
 7. 目的地を変えると出口が変わり、`onward.exit.label` に看板の文字が入る。
 8. 同じ JSON を二度投げてバイト一致（順位と理由）。
+9. 片方向の辺で、集合場所→出口と出口→集合場所が一致しないとき、`onward` は集合場所→出口を使う。`pathNodeIds` は集合場所始まり。
 
 ZIP 取り込み後に、同じ契約で実データテストを足す。ゴールデンのノード ID はカタログ経由にし、取り込みのたびに生 ID をテストへ直書きしない。
 
@@ -459,8 +438,8 @@ ZIP 取り込み後に、同じ契約で実データテストを足す。ゴー�
 | ファイル | 中身 |
 |---|---|
 | `apps/worker/src/contract.ts` | この文書の HTTP 契約の型。正本はこの文書で、コードは写し |
-| `apps/worker/src/graph.ts` | 前処理後の内部グラフと地点カタログ。隣接リスト、次数 |
-| `apps/worker/src/recommend.ts` | 通行可能性、多点始点最短、順位付け、手順、確認点 |
+| `apps/worker/src/graph.ts` | 前処理後の内部グラフと地点カタログ。順方向・逆方向の隣接、次数 |
+| `apps/worker/src/recommend.ts` | 通行可能性、多点始点最短、順位付け、手順、確認点。計算は [`CORE.md`](./CORE.md) |
 | `apps/worker/src/index.ts` | Hono の口。ステートレス |
 | `apps/worker/test/fixture.ts` | 小さな固定グラフ（改札 7・3 路線、集合候補 3、出口 2、階段 1 本） |
 | `apps/worker/test/recommend.test.ts` | ゴールデンテスト |

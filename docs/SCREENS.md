@@ -1,6 +1,6 @@
 # 画面と部品
 
-方針の正本は [`PRODUCT.md`](./PRODUCT.md)、応答フィールドの正本は [`./RECOMMENDER.md`](./RECOMMENDER.md)、部品と文言の正本は Figma。この文書は**決めたことと、その理由**だけを書く。
+方針の正本は [`PRODUCT.md`](./PRODUCT.md)、応答フィールドの正本は [`./RECOMMENDER.md`](./RECOMMENDER.md)、計算の正本は [`CORE.md`](./CORE.md)、部品と文言の正本は Figma。この文書は**決めたことと、その理由**だけを書く。
 
 Figma の `Concept Display` は探索用。何を作るかだけを引き継ぎ、見た目・情報設計・地名や路線の例は引き継がない。
 

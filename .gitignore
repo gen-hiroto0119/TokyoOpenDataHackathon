@@ -13,3 +13,6 @@ storybook-static/
 data/raw/
 *.zip
 data/graph/
+
+# Go の取り込みバイナリ。ソースからビルドする。
+tools/ingest/ingest
