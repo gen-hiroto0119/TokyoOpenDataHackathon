@@ -1,0 +1,25 @@
+@import url("https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Barlow+Condensed:wght@600&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap&icon_names=accessible,arrow_back,cancel,check_circle,content_copy,directions_walk,elevator,escalator,expand_more,group,groups,photo_camera,route,schedule,search,stairs,straight,turn_left,turn_right,turn_slight_left,turn_slight_right,wc,wifi_off");
+
+html,
+body,
+#root {
+  margin: 0;
+  color: #17232d;
+}
+
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: block;
+  white-space: nowrap;
+  direction: ltr;
+  font-feature-settings: "liga";
+  -webkit-font-feature-settings: "liga";
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+  -webkit-font-smoothing: antialiased;
+}

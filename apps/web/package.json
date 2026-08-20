@@ -1,0 +1,30 @@
+{
+  "name": "web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.7.0",
+    "@stylexjs/stylex": "^0.19.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@storybook/addon-docs": "^10.5.9",
+    "@storybook/addon-designs": "^11.1.4",
+    "@storybook/react-vite": "^10.5.9",
+    "@stylexjs/unplugin": "^0.19.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "storybook": "^10.5.9",
+    "typescript": "^5.7.2",
+    "vite": "^7.1.5"
+  }
+}

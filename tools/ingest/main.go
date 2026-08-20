@@ -1,7 +1,7 @@
 // 東京都「新宿駅周辺の施設情報及び移動ルート」の ZIP を、推薦 Worker が読む
 // graph.json と catalog.json に変える。リクエストの経路には乗らない。
 //
-// 契約の正本は docs/engineering/RECOMMENDER.md。
+// 契約の正本は docs/RECOMMENDER.md。
 package main
 
 import (
@@ -68,10 +68,15 @@ type feature struct {
 		Facility    string `json:"facility"`
 		Barrier     string `json:"barrier"`
 		Traffic     string `json:"traffic"`
+		Marker      string `json:"marker"`
 	} `json:"properties"`
 	Location *struct {
 		Coordinates []float64 `json:"coordinates"`
 	} `json:"location"`
+	Geometry struct {
+		Type        string          `json:"type"`
+		Coordinates json.RawMessage `json:"coordinates"`
+	} `json:"geometry"`
 }
 
 type featureCollection struct {
@@ -135,14 +140,23 @@ type meetingEntry struct {
 	NameJa         string  `json:"nameJa"`
 	Explainability int     `json:"explainability"`
 	Evidence       string  `json:"evidence"`
+	// 集合場所から目的地への Maps リンクの origin に使う。
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
 }
 
 type exitEntry struct {
 	CatalogID string  `json:"catalogId"`
 	NodeID    string  `json:"nodeId"`
-	NameJa    string  `json:"nameJa"`
-	Lat       float64 `json:"lat"`
-	Lng       float64 `json:"lng"`
+	/* 東京都データ側のラベル。番号・記号・空のいずれか。現地がそうなっている。 */
+	Label  string  `json:"label"`
+	NameJa string  `json:"nameJa"`
+	/* ラベルの出どころ。tokyo は東京都データ、manual は手書き。 */
+	LabelSource string `json:"labelSource"`
+	/* 人が見て確かめたか。hypothesis は取り込んだだけの状態。 */
+	Evidence string `json:"evidence"`
+	Lat    float64 `json:"lat"`
+	Lng    float64 `json:"lng"`
 }
 
 type destinationEntry struct {
@@ -157,6 +171,73 @@ type catalogOut struct {
 	Meetings     []meetingEntry     `json:"meetings"`
 	Exits        []exitEntry        `json:"exits"`
 	Destinations []destinationEntry `json:"destinations"`
+}
+
+
+// ---------------------------------------------------------------- 出口の名前
+
+type center struct {
+	lat, lng float64
+	ok       bool
+}
+
+// 出入口は面で入っている。その外周の重心を代表点にする。
+func polygonCenter(f feature) center {
+	if f.Geometry.Type != "Polygon" {
+		return center{}
+	}
+	var poly [][][2]float64
+	if err := json.Unmarshal(f.Geometry.Coordinates, &poly); err != nil || len(poly) == 0 || len(poly[0]) == 0 {
+		return center{}
+	}
+	var lat, lng float64
+	for _, c := range poly[0] {
+		lng += c[0]
+		lat += c[1]
+	}
+	n := float64(len(poly[0]))
+	return center{lat / n, lng / n, true}
+}
+
+func haversineM(lat1, lng1, lat2, lng2 float64) float64 {
+	const r = 6371000.0
+	toRad := func(d float64) float64 { return d * math.Pi / 180 }
+	dLat := toRad(lat2 - lat1)
+	dLng := toRad(lng2 - lng1)
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(toRad(lat1))*math.Cos(toRad(lat2))*math.Sin(dLng/2)*math.Sin(dLng/2)
+	return 2 * r * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+// 出口の表示名。看板に書いてあるとおりに出す。
+//
+// 番号は事業者ごとに振り直されていて、新宿駅に「7番出入口」は3つある。
+// ただし曖昧なのは口頭で場所を指すときの話で、この経路案内では違う。
+// 利用者はもう集合していて、こちらが出した経路をたどって一緒に歩く。
+// 目の前の看板の「7」を見つければよく、どの事業者の7番かを知る必要がない。
+// だから番号を直したり修飾したりせず、そのまま出す。
+func exitNameOf(label string) string {
+	if label == "" {
+		return "地上出口"
+	}
+	// 番号・記号は看板の文字なので「出口」を前に付ける。
+	// 手で書いた「ルミネエスト 地下入口」のような文はそのまま出す。
+	if len([]rune(label)) <= 3 {
+		return "出口 " + label
+	}
+	return label
+}
+
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------- 路線の対応
@@ -223,9 +304,9 @@ func slug(s string) string {
 func main() {
 	in := flag.String("in", "data/raw/extracted", "展開済みの東京都データ")
 	out := flag.String("out", "data/graph", "出力先")
+	labelPath := flag.String("labels", "data/labels/exits.json", "手で付けた出口のラベル")
 	version := flag.String("version", "2023-02-20", "配布データの版")
 	hash := flag.String("hash", "", "ZIP の SHA-256")
-	annotationPath := flag.String("annotations", "data/annotations/exits.json", "出口の名前の注釈")
 	flag.Parse()
 
 	var nav navFile
@@ -398,11 +479,20 @@ func main() {
 			}
 		}
 	}
+	// map の反復順は実行ごとに変わる。同じノードへ複数の地物が寄るとき、
+	// どれが残るかが揺れて出力が再現しなくなる。ID の順に固定する。
+	gidsSorted := make([]int64, 0, len(geoms))
+	for gid := range geoms {
+		gidsSorted = append(gidsSorted, gid)
+	}
+	sort.Slice(gidsSorted, func(i, j int) bool { return gidsSorted[i] < gidsSorted[j] })
+
 	var entries []entryEntry
 	seenEntry := map[string]bool{}
 	var gatesWithoutLine []string
 	var skippedExitOnly []string
-	for gid, f := range geoms {
+	for _, gid := range gidsSorted {
+		f := geoms[gid]
 		name := displayName(gid)
 		if f.Properties.Barrier != "gate" || name == "" {
 			continue
@@ -481,7 +571,8 @@ func main() {
 	var meetings []meetingEntry
 	seenMeeting := map[string]bool{}
 	var droppedDuplicate int
-	for gid, f := range geoms {
+	for _, gid := range gidsSorted {
+		f := geoms[gid]
 		name := displayName(gid)
 		if name == "" || codeName.MatchString(name) || privateName.MatchString(name) {
 			continue
@@ -515,84 +606,170 @@ func main() {
 		if seenMeeting[nodeID] {
 			continue
 		}
+		ll, ok := nodeLatLng[ids[0]]
+		if !ok {
+			continue
+		}
 		seenMeeting[nodeID] = true
 		cid := "meet." + strconv.FormatInt(gid, 10)
 		meetings = append(meetings, meetingEntry{
 			CatalogID: &cid, NodeID: nodeID, NameJa: name,
 			Explainability: explainOf(name), Evidence: "hypothesis",
+			Lat: ll[0], Lng: ll[1],
 		})
 	}
 	sort.Slice(meetings, func(i, j int) bool { return meetings[i].NodeID < meetings[j].NodeID })
 
-	// 出口。データに「出口」という種別は無いが、番号だけの名前を持つ地物が
-	// 地下から 1F までまたがっている。逆ジオコーディングで確かめたところ、
-	// これは出入口番号だった（例: 7 → 京王 新宿駅 7番出入口）。
-	// 番号だけでは利用者に伝わらないので、名前は注釈ファイルで上書きする。
-	numberName := regexp.MustCompile(`^\d{1,2}$`)
-	annotations := map[string]struct {
-		NameJa string `json:"nameJa"`
+	// 出口。marker=entrance の地物が 96 件ある。地上に出る所なので全部 1F。
+	// ラベルは番号・記号・空のいずれかで、事業者ごとに振り直されているため
+	// 「7番出入口」だけでは新宿駅に3つあって指せない。Apple のマップでも同じ状態で、
+	// これはデータの誤りではなく現地がそうなっている。
+	// ただし曖昧なのは口頭で場所を指すときの話で、この案内では違う。
+	// 経路を出して一緒に歩かせる以上、文脈はこちらが供給している。
+	// だから番号を直さず、修飾もせず、看板のとおりに出す。
+	//
+	// 24 件は経路データがその地物を参照していない。ただし外にあるわけではなく、
+	// 全部 2〜12m 以内に 1F のノードがある。結びつけが抜けているだけなので、
+	// 同じ階の一番近いノードに寄せる。離れているものは寄せない。
+	const snapM = 15.0
+	type nodePos struct {
+		id  int64
+		lat float64
+		lng float64
+	}
+	var groundNodes []nodePos
+	for _, nd := range nodes {
+		if nd.FloorLabel == nil || *nd.FloorLabel != "1F" {
+			continue
+		}
+		id, err := strconv.ParseInt(nd.ID, 10, 64)
+		if err != nil {
+			continue
+		}
+		if ll, ok := nodeLatLng[id]; ok {
+			groundNodes = append(groundNodes, nodePos{id, ll[0], ll[1]})
+		}
+	}
+	snapTo := func(lat, lng float64) (int64, float64, bool) {
+		bestID, bestD := int64(0), math.MaxFloat64
+		for _, n := range groundNodes {
+			d := haversineM(lat, lng, n.lat, n.lng)
+			if d < bestD || (d == bestD && n.id < bestID) {
+				bestID, bestD = n.id, d
+			}
+		}
+		if bestID == 0 || bestD > snapM {
+			return 0, 0, false
+		}
+		return bestID, bestD, true
+	}
+
+	// 東京都のデータには名前の無い出入口が 42 件ある。取り込みの漏れではなく
+	// 元データに入っていない（display_name も entities の参照も無い）。
+	// 付いている番号も現地と食い違うものがある。
+	// どちらも手で付けたぶんをここで重ねる。出どころは分けて持つ。
+	manualLabels := map[string]struct {
+		LabelJa string `json:"labelJa"`
+		/* 出口ではないと人が判断したもの。地下広場への入口や設備の開口が混ざる。 */
+		Exclude bool `json:"exclude"`
+		/* 人が見て出口だと確かめたもの。ラベルを直していなくても記録に残す。 */
+		Confirmed bool `json:"confirmed"`
 	}{}
-	if b, err := os.ReadFile(*annotationPath); err == nil {
-		if err := json.Unmarshal(b, &annotations); err != nil {
-			log.Fatalf("parse %s: %v", *annotationPath, err)
+	if b, err := os.ReadFile(*labelPath); err == nil {
+		if err := json.Unmarshal(b, &manualLabels); err != nil {
+			log.Fatalf("parse %s: %v", *labelPath, err)
 		}
 	}
 
 	var exits []exitEntry
+	var snapped, tooFar, manual, replaced, excluded, checked int
 	seenExit := map[string]bool{}
-	for _, e := range ce.Entities {
-		name := strings.TrimSpace(e.Properties.Name)
-		if !numberName.MatchString(name) {
+	for _, gid := range gidsSorted {
+		f := geoms[gid]
+		if f.Properties.Marker != "entrance" {
 			continue
 		}
-		// 1 つの番号が複数のジオメトリ（各階）を持つ。地上に出る 1F のものを 1 つ選び、
-		// 座標とノードは必ず同じジオメトリから取る。混ぜると番号と場所がずれる。
-		var nodeID int64
-		var lat, lng float64
-		for _, g := range e.Properties.Geometry {
-			pair, ok := g.([]any)
-			if !ok || len(pair) == 0 {
-				continue
-			}
-			idf, ok := pair[0].(float64)
+		ring := polygonCenter(f)
+		if !ring.ok {
+			continue
+		}
+		// 地物に紐づくノードのうち、出入口の中心に一番近いものを使う。
+		// ID の若い順に取ると最大 13m ずれる。同じ距離なら ID の順。
+		ids := gidNodes[gid]
+		var nodeInt int64
+		bestD := math.MaxFloat64
+		for _, id := range ids {
+			ll, ok := nodeLatLng[id]
 			if !ok {
 				continue
 			}
-			gid := int64(idf)
-			gm, ok := geoms[gid]
-			if !ok || gm.Location == nil || len(gm.Location.Coordinates) != 2 {
+			d := haversineM(ring.lat, ring.lng, ll[0], ll[1])
+			if d < bestD || (d == bestD && id < nodeInt) {
+				nodeInt, bestD = id, d
+			}
+		}
+		if nodeInt == 0 {
+			id, _, ok := snapTo(ring.lat, ring.lng)
+			if !ok {
+				tooFar++
 				continue
 			}
-			var pick int64
-			for _, nd := range nav.Nodes {
-				for _, l := range nd.Links {
-					if l.GID == gid && levelName[l.LID] == "1F" {
-						if pick == 0 || nd.ID < pick {
-							pick = nd.ID
-						}
-					}
+			nodeInt = id
+			snapped++
+		}
+		nodeID := strconv.FormatInt(nodeInt, 10)
+		// 同じノードに複数の出入口が寄ることがある。看板の文字があるものを残す。
+		// 捨てると、現地に表示があるのに無名として出てしまう。
+		if prev, taken := seenExit[nodeID]; taken {
+			if prev || strings.TrimSpace(f.Properties.DisplayName) == "" {
+				continue
+			}
+			for i := range exits {
+				if exits[i].NodeID == nodeID {
+					exits = append(exits[:i], exits[i+1:]...)
+					break
 				}
 			}
-			if pick != 0 {
-				nodeID = pick
-				lng, lat = gm.Location.Coordinates[0], gm.Location.Coordinates[1]
-				break
+		}
+		ll, ok := nodeLatLng[nodeInt]
+		if !ok {
+			continue
+		}
+		// 出口の座標は地物そのものの中心を使う。ノードは経路上の点でしかない。
+		if ring.ok {
+			ll = [2]float64{ring.lat, ring.lng}
+		}
+		label := strings.TrimSpace(f.Properties.DisplayName)
+		source := "tokyo"
+		evidence := "hypothesis"
+		// 手書きは東京都のラベルも上書きできる。現地と食い違っているものがある。
+		if m, ok := manualLabels[strconv.FormatInt(gid, 10)]; ok {
+			if m.Exclude {
+				excluded++
+				continue
+			}
+			if v := strings.TrimSpace(m.LabelJa); v != "" && v != label {
+				label = v
+				source = "manual"
+				manual++
+			}
+			// ラベルを直していなくても、見て確かめたことは残す。
+			if m.Confirmed || m.LabelJa != "" {
+				evidence = "checked"
+				checked++
 			}
 		}
-		if nodeID == 0 || lat == 0 {
-			continue
+		if label == "" {
+			source = ""
 		}
-		id := strconv.FormatInt(nodeID, 10)
-		if seenExit[id] {
-			continue
+		if seenExit[nodeID] {
+			replaced++
 		}
-		seenExit[id] = true
-		nameJa := name + "番出入口"
-		if a, ok := annotations[id]; ok && a.NameJa != "" {
-			nameJa = a.NameJa
-		}
+		seenExit[nodeID] = label != ""
 		exits = append(exits, exitEntry{
-			CatalogID: "exit." + id, NodeID: id, NameJa: nameJa, Lat: lat, Lng: lng,
+			CatalogID: "exit." + strconv.FormatInt(gid, 10), NodeID: nodeID,
+			Label: label, NameJa: exitNameOf(label), LabelSource: source, Evidence: evidence,
+			Lat: ll[0], Lng: ll[1],
 		})
 	}
 	sort.Slice(exits, func(i, j int) bool { return exits[i].NodeID < exits[j].NodeID })
@@ -631,7 +808,8 @@ func main() {
 	write("catalog.json", c)
 
 	fmt.Printf("\nnodes=%d links=%d(expanded)\n", len(nodes), len(links))
-	fmt.Printf("entries=%d meetings=%d exits=%d\n", len(entries), len(meetings), len(exits))
+	fmt.Printf("entries=%d meetings=%d exits=%d（近さで結んだもの %d、遠すぎて外したもの %d、手書きラベル %d、外したもの %d、人が確かめたもの %d）\n",
+		len(entries), len(meetings), len(exits), snapped, tooFar, manual, excluded, checked)
 	fmt.Printf("同じ名前が複数あって候補から外した地点: %d\n", droppedDuplicate)
 	byLine := map[string]int{}
 	for _, e := range entries {

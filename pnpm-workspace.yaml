@@ -1,5 +1,2 @@
-allowBuilds:
-  esbuild: false
-  sharp: false
-  workerd: false
-ignoredBuiltDependencies: esbuild sharp workerd
+packages:
+  - apps/*
