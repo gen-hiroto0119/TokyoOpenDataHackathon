@@ -5,18 +5,28 @@ import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { Button } from "../components/Button.js";
+import { ErrorNotice } from "../components/ErrorNotice.js";
 import { Icon } from "../components/Icon.js";
 import { Permission } from "../components/Permission.js";
 import { SearchResult } from "../components/SearchResult.js";
 import { Sheet } from "../components/Sheet.js";
+import type { HereRow } from "../route-view.js";
 
 export type HereKind = "Default" | "List" | "Ask" | "Denied";
 
 export type HereProps = {
   Kind?: HereKind;
+  /** 自分の leg の確認点(confirmations)。経路順。 */
+  rows?: readonly HereRow[];
+  /** 送信中は行のタップを受け付けない。 */
+  busy?: boolean;
+  /** 直前の送信が失敗した。 */
+  error?: boolean;
   onBack?: () => void;
   onAllow?: () => void;
   onPickList?: () => void;
+  onConfirm?: (nodeId: string) => void;
+  onRetry?: () => void;
 };
 
 type PlaceRow = {
@@ -43,10 +53,11 @@ const reading: readonly PlaceRow[] = [
   },
 ];
 
-const landmarks: readonly PlaceRow[] = [
-  { Name: "丸ノ内線改札", Detail: "", Distance: "" },
-  { Name: "西口交番前", Detail: "", Distance: "" },
-  { Name: "出口 8", Detail: "", Distance: "" },
+/** Storybook / props 未指定時のフォールバック。実データは RoomPage が渡す。 */
+const DEFAULT_ROWS: readonly HereRow[] = [
+  { nodeId: "gate", nameJa: "丸ノ内線改札", detailJa: "改札" },
+  { nodeId: "branch", nameJa: "中央通路との合流点", detailJa: "分岐" },
+  { nodeId: "meeting", nameJa: "西口交番前", detailJa: "集合場所" },
 ];
 
 const styles = stylex.create({
@@ -163,6 +174,29 @@ function places(rows: readonly PlaceRow[]) {
   );
 }
 
+/** 確認点(confirmations)の一覧。通過済みも選び直せるよう選択可能のまま出す。 */
+function confirmationPlaces(
+  rows: readonly HereRow[],
+  busy: boolean,
+  onConfirm?: (nodeId: string) => void,
+) {
+  return (
+    <div className={stylexClassName(styles.places)}>
+      {rows.map((row) => (
+        <div key={row.nodeId} className={stylexClassName(styles.place)}>
+          <SearchResult
+            Name={row.nameJa}
+            Detail={row.detailJa}
+            Distance=""
+            Photo="Hidden"
+            onClick={busy ? undefined : () => onConfirm?.(row.nodeId)}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function chip(Kind: HereKind) {
   switch (Kind) {
     case "Default":
@@ -180,8 +214,13 @@ function chip(Kind: HereKind) {
 
 function panel(
   Kind: HereKind,
+  rows: readonly HereRow[],
+  busy: boolean,
+  error: boolean,
   onAllow?: () => void,
   onPickList?: () => void,
+  onConfirm?: (nodeId: string) => void,
+  onRetry?: () => void,
 ) {
   switch (Kind) {
     case "Default":
@@ -198,7 +237,14 @@ function panel(
     case "List":
       return (
         <div className={stylexClassName(styles.sheet)}>
-          <Sheet Height="Full">{places(landmarks)}</Sheet>
+          <Sheet Height="Full">
+            {confirmationPlaces(rows, busy, onConfirm)}
+            {error ? (
+              <div className={stylexClassName(styles.action)}>
+                <ErrorNotice onRetry={onRetry} />
+              </div>
+            ) : null}
+          </Sheet>
         </div>
       );
     case "Ask":
@@ -220,7 +266,17 @@ function panel(
   }
 }
 
-export function Here({ Kind = "Default", onBack, onAllow, onPickList }: HereProps) {
+export function Here({
+  Kind = "Default",
+  rows = DEFAULT_ROWS,
+  busy = false,
+  error = false,
+  onBack,
+  onAllow,
+  onPickList,
+  onConfirm,
+  onRetry,
+}: HereProps) {
   return (
     <div className={stylexClassName(styles.root)}>
       <div className={stylexClassName(styles.camera)} />
@@ -228,7 +284,7 @@ export function Here({ Kind = "Default", onBack, onAllow, onPickList }: HereProp
         <Icon Name="Back" />
       </BaseButton>
       {chip(Kind)}
-      {panel(Kind, onAllow, onPickList)}
+      {panel(Kind, rows, busy, error, onAllow, onPickList, onConfirm, onRetry)}
     </div>
   );
 }

@@ -17,6 +17,10 @@ export type FieldProps = {
   State?: FieldState;
   name?: string;
   onValueChange?: (value: string) => void;
+  /** タップで別画面へ遷移させる用途(例: 行き先の検索)。見た目は変えない。 */
+  onClick?: () => void;
+  /** onClick と組み合わせて、その場での編集をさせない用途。 */
+  readOnly?: boolean;
 };
 
 const styles = stylex.create({
@@ -121,6 +125,8 @@ export function Field({
   State = "Default",
   name,
   onValueChange,
+  onClick,
+  readOnly,
 }: FieldProps) {
   const filled = Content === "Filled";
   const disabled = State === "Disabled";
@@ -146,6 +152,8 @@ export function Field({
         value={filled ? Value : ""}
         placeholder={filled ? undefined : Value}
         onValueChange={onValueChange}
+        onClick={onClick}
+        readOnly={readOnly}
         className={stylexClassName(
           styles.control,
           valueType,

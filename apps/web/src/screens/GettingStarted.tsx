@@ -172,6 +172,10 @@ const styles = stylex.create({
   },
 });
 
+export type GettingStartedProps = {
+  onStart?: () => void;
+};
+
 function Signature() {
   return (
     <div className={stylexClassName(styles.signature)} aria-hidden="true">
@@ -195,7 +199,7 @@ function Signature() {
   );
 }
 
-export function GettingStarted() {
+export function GettingStarted({ onStart }: GettingStartedProps) {
   return (
     <div className={stylexClassName(styles.root)}>
       <Signature />
@@ -211,7 +215,7 @@ export function GettingStarted() {
       </div>
       <div className={stylexClassName(styles.spacer)} />
       <div className={stylexClassName(styles.action)}>
-        <Button Label="はじめる" Size="Large" Style="Primary" />
+        <Button Label="はじめる" Size="Large" Style="Primary" onClick={onStart} />
       </div>
     </div>
   );

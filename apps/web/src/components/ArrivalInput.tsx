@@ -2,12 +2,17 @@ import * as stylex from "@stylexjs/stylex";
 import { space } from "../tokens/space.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { Composer } from "./Composer.js";
-import { FieldSelect } from "./FieldSelect.js";
+import { FieldSelect, type FieldSelectOption } from "./FieldSelect.js";
 
 export type ArrivalInputState = "Empty" | "Read";
 
 export type ArrivalInputProps = {
   State?: ArrivalInputState;
+  /** 選ばれている路線の表示ラベル。省略時はダミー表示のまま。 */
+  Value?: string;
+  /** 選べる路線。省略時はダミーの3路線。 */
+  options?: ReadonlyArray<FieldSelectOption>;
+  onValueChange?: (value: string | null) => void;
 };
 
 const arrivalLines = [
@@ -28,26 +33,33 @@ const styles = stylex.create({
   },
 });
 
-function lineField(State: ArrivalInputState) {
+function lineField(
+  State: ArrivalInputState,
+  Value: string | undefined,
+  options: ReadonlyArray<FieldSelectOption>,
+  onValueChange: ((value: string | null) => void) | undefined,
+) {
   switch (State) {
     case "Read":
       return (
         <FieldSelect
           Label="到着する路線"
-          Value="東京メトロ丸ノ内線"
+          Value={Value ?? "東京メトロ丸ノ内線"}
           Content="Filled"
           showAssistive={false}
-          options={arrivalLines}
+          options={options}
+          onValueChange={onValueChange}
         />
       );
     case "Empty":
       return (
         <FieldSelect
           Label="到着する路線"
-          Value="路線を選ぶ"
+          Value={Value ?? "路線を選ぶ"}
           Content="Empty"
           showAssistive={false}
-          options={arrivalLines}
+          options={options}
+          onValueChange={onValueChange}
         />
       );
     default: {
@@ -57,7 +69,12 @@ function lineField(State: ArrivalInputState) {
   }
 }
 
-export function ArrivalInput({ State = "Read" }: ArrivalInputProps) {
+export function ArrivalInput({
+  State = "Read",
+  Value,
+  options = arrivalLines,
+  onValueChange,
+}: ArrivalInputProps) {
   return (
     <div className={stylexClassName(styles.root)}>
       <Composer
@@ -68,7 +85,7 @@ export function ArrivalInput({ State = "Read" }: ArrivalInputProps) {
         AddActionLabel="追加する"
         SubmitActionLabel="読み取る"
       />
-      {lineField(State)}
+      {lineField(State, Value, options, onValueChange)}
     </div>
   );
 }

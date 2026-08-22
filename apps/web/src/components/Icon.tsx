@@ -22,6 +22,7 @@ export const iconNames = [
   "Restroom",
   "StepFree",
   "Walk",
+  "Navigation",
   "Gathered",
   "Copy",
   "Confirmed",
@@ -50,6 +51,8 @@ const glyph: Record<IconName, string> = {
   Restroom: "wc",
   StepFree: "accessible",
   Walk: "directions_walk",
+  /** 現在地パック。地図アプリの航法カーソルと同じ形。 */
+  Navigation: "navigation",
   Gathered: "groups",
   Copy: "content_copy",
   Confirmed: "check_circle",
@@ -78,12 +81,19 @@ const styles = stylex.create({
 
 export type IconProps = {
   Name?: IconName;
+  /** 塗りつぶし表示(既定は輪郭線)。現在地パックなど視認性を優先する場面向け。 */
+  Filled?: boolean;
 };
 
-export function Icon({ Name = "Search" }: IconProps) {
+const FILL_1 = '"FILL" 1, "wght" 400, "GRAD" 0, "opsz" 24';
+
+export function Icon({ Name = "Search", Filled = false }: IconProps) {
   return (
     <span className={stylexClassName(styles.root)} aria-hidden="true">
-      <span className={`material-symbols-outlined ${stylexClassName(styles.glyph) ?? ""}`}>
+      <span
+        className={`material-symbols-outlined ${stylexClassName(styles.glyph) ?? ""}`}
+        style={Filled ? { fontVariationSettings: FILL_1 } : undefined}
+      >
         {glyph[Name]}
       </span>
     </span>

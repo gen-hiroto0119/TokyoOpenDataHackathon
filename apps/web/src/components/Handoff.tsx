@@ -5,6 +5,7 @@ import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { Button } from "./Button.js";
+import { Icon } from "./Icon.js";
 
 export type HandoffState = "Ready" | "Waiting";
 
@@ -12,6 +13,13 @@ export type HandoffProps = {
   State?: HandoffState;
   From?: string;
   To?: string;
+  /** 今の区間の到達点と残り距離(例: 「集合場所まで 120m · 西口交番前」
+   * 「出口 8 まで 60m」)。画面6の現在行に追従して変わる。無指定なら出さない。 */
+  RemainderJa?: string;
+  /** 出口の名前が hypothesis(未確認)のとき、断定しない補足行を出す。 */
+  Uncertain?: boolean;
+  /** 「表示が違う」をすでに押した。ボタンの代わりに確認済みの表示にする。 */
+  Corrected?: boolean;
   onOpenMap?: () => void;
   onCorrect?: () => void;
 };
@@ -82,13 +90,31 @@ const styles = stylex.create({
     margin: 0,
     color: color["--color-text-primary"],
   },
+  uncertain: {
+    margin: 0,
+    color: color["--color-text-secondary"],
+  },
   note: {
+    margin: 0,
+    color: color["--color-text-secondary"],
+  },
+  remainder: {
     margin: 0,
     color: color["--color-text-secondary"],
   },
   fill: {
     display: "grid",
     width: "100%",
+  },
+  corrected: {
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space["--space-2"],
+    margin: 0,
+    color: color["--color-text-secondary"],
+    flexShrink: 0,
   },
 });
 
@@ -118,10 +144,43 @@ function buttonState(State: HandoffState) {
   }
 }
 
+function correctionSlot(Corrected: boolean, onCorrect?: () => void) {
+  if (Corrected) {
+    return (
+      <span className={stylexClassName(type["UI/Caption/Regular"], styles.corrected)}>
+        <Icon Name="Confirmed" />
+        確認済み
+      </span>
+    );
+  }
+  return (
+    <BaseButton onClick={onCorrect} className={stylexClassName(type["UI/Caption/Regular"], styles.correction)}>
+      表示が違う
+    </BaseButton>
+  );
+}
+
+function uncertainSlot(Uncertain: boolean) {
+  if (!Uncertain) return null;
+  return (
+    <p className={stylexClassName(type["UI/Small/Regular"], styles.uncertain)}>
+      出口の名前は未確認です。現地の看板を確かめてください
+    </p>
+  );
+}
+
+function remainderSlot(RemainderJa: string | undefined) {
+  if (!RemainderJa) return null;
+  return <p className={stylexClassName(type["UI/Small/Regular"], styles.remainder)}>{RemainderJa}</p>;
+}
+
 export function Handoff({
   State = "Ready",
   From = "出口 8 を出たところから",
   To = "東京都庁",
+  RemainderJa,
+  Uncertain = false,
+  Corrected = false,
   onOpenMap,
   onCorrect,
 }: HandoffProps) {
@@ -130,11 +189,11 @@ export function Handoff({
       <div className={stylexClassName(styles.route)}>
         <div className={stylexClassName(styles.fromRow)}>
           <p className={stylexClassName(type["UI/Small/Regular"], styles.from)}>{From}</p>
-          <BaseButton onClick={onCorrect} className={stylexClassName(type["UI/Caption/Regular"], styles.correction)}>
-            表示が違う
-          </BaseButton>
+          {correctionSlot(Corrected, onCorrect)}
         </div>
+        {remainderSlot(RemainderJa)}
         <p className={stylexClassName(type["Wayfinding/Landmark"], styles.to)}>{To}</p>
+        {uncertainSlot(Uncertain)}
       </div>
       <p className={stylexClassName(type["UI/Small/Regular"], styles.note)}>{noteCopy(State)}</p>
       <div className={stylexClassName(styles.fill)}>
