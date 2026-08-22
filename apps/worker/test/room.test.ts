@@ -145,6 +145,7 @@ describe("エラーの対応", () => {
     expect(statusOf("forbidden")).toBe(403);
     expect(statusOf("room_not_found")).toBe(404);
     expect(statusOf("not_enough_participants")).toBe(409);
+    expect(statusOf("preset_destination_required")).toBe(409);
     expect(statusOf("room_expired")).toBe(410);
   });
 });

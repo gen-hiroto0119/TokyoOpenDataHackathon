@@ -9,7 +9,9 @@ import type { Catalog, Dataset, Graph, GraphLink, GraphNode, VerticalKind } from
 type NodeSpec = [id: string, x: number, y: number, nameJa: string | null, floorLabel: string];
 
 const NODE_SPECS: NodeSpec[] = [
-  ["g.jr.west", 0, 0, "JR 西口改札", "B1"],
+  // x を 0 でなく 1 にする。(0,0) は worker 側で「座標未取得」センチネル扱い
+  // になるため、実在する改札をそこに置かない。
+  ["g.jr.west", 1, 0, "JR 西口改札", "B1"],
   ["g.keio.west", 0, 40, "京王線 西口改札", "B1"],
   ["g.maru.west", 0, 90, "丸ノ内線 西口方面改札", "B1"],
   ["g.jr.south", 0, 200, "JR 南口改札", "B1"],
@@ -121,8 +123,6 @@ const catalog: Catalog = {
       nameJa: "西口交番前",
       explainability: 3,
       evidence: "hypothesis",
-      lat: 35.6901,
-      lng: 139.6989,
     },
     {
       catalogId: "meet.board",
@@ -130,8 +130,6 @@ const catalog: Catalog = {
       nameJa: "B1 案内板前",
       explainability: 2,
       evidence: "hypothesis",
-      lat: 35.6905,
-      lng: 139.6987,
     },
     {
       catalogId: "meet.south",
@@ -139,8 +137,6 @@ const catalog: Catalog = {
       nameJa: "南通路広場",
       explainability: 1,
       evidence: "hypothesis",
-      lat: 35.6897,
-      lng: 139.6991,
     },
   ],
   exits: [

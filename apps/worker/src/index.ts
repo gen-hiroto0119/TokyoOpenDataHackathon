@@ -1,8 +1,12 @@
-import { Hono } from "hono";
-import type { RecommendationRequest } from "./contract.js";
-import type { Dataset } from "./graph.js";
-import { RecommendError, recommend } from "./recommend.js";
 import { vValidator } from "@hono/valibot-validator";
+import { Hono } from "hono";
+import catalogJson from "../data/catalog.json" with { type: "json" };
+import graphJson from "../data/graph.json" with { type: "json" };
+import type { CatalogResponse, RecommendationRequest, RecommendationResponse } from "./contract.js";
+import { RecommendationRequestSchema } from "./contract.js";
+import type { Catalog, Dataset, Graph } from "./graph.js";
+import { RecommendError, recommend } from "./recommend.js";
+import { buildRoomRecommendations, parseRoomRecommendationsLimit } from "./room-recommendations.js";
 import {
   CreateRoomSchema,
   JoinSchema,
@@ -26,10 +30,27 @@ type Env = { ROOM: DurableObjectNamespace };
  * ルームの状態は持たない（Durable Object は別）。
  */
 
-let dataset: Dataset | null = null;
+let dataset: Dataset = {
+  graph: graphJson as Graph,
+  catalog: catalogJson as Catalog,
+};
 
 export function setDataset(next: Dataset): void {
   dataset = next;
+}
+
+/** 縦切りで出す路線。ingest の line id と同じ。 */
+const CATALOG_LINES: CatalogResponse["lines"] = [
+  { id: "line.jr", nameJa: "JR" },
+  { id: "line.keio", nameJa: "京王" },
+  { id: "line.marunouchi", nameJa: "丸ノ内" },
+];
+
+function publicCatalog(ds: Dataset): CatalogResponse {
+  return {
+    lines: CATALOG_LINES,
+    destinations: ds.catalog.destinations,
+  };
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -65,43 +86,82 @@ function jsonBody(value: unknown, auth?: string | undefined): RequestInit {
   };
 }
 
-app.get("/health", (c) => c.json({ ok: true, dataset: dataset?.graph.datasetVersion ?? null }));
+app.get("/health", (c) => c.json({ ok: true, datasetVersion: dataset.graph.datasetVersion }));
 
-app.post("/v1/recommendations", async (c) => {
-  if (!dataset) {
-    return c.json({ code: "dataset_mismatch", messageJa: "データセットが読み込まれていません" }, 503);
-  }
-  let body: RecommendationRequest;
-  try {
-    body = (await c.req.json()) as RecommendationRequest;
-  } catch {
-    return c.json({ code: "invalid_participants", messageJa: "JSON を読めません" }, 400);
-  }
+/** RecommendError の HTTP ステータス。POST とルーム側の両方が使う。 */
+function recommendErrorStatus(code: RecommendError["code"]): 400 | 409 | 422 {
+  if (code === "dataset_mismatch") return 409;
+  if (code === "disconnected" || code === "no_feasible_meeting") return 422;
+  return 400;
+}
 
-  try {
-    return c.json(recommend(dataset, body));
-  } catch (error) {
-    if (error instanceof RecommendError) {
-      const status =
-        error.code === "dataset_mismatch"
-          ? 409
-          : error.code === "disconnected" || error.code === "no_feasible_meeting"
-            ? 422
-            : 400;
+app.post(
+  "/v1/recommendations",
+  // JSON 自体が壊れているときは、スキーマ検証の前に弾く。
+  async (c, next) => {
+    try {
+      await c.req.json();
+    } catch {
+      return c.json({ code: "invalid_request" as const, messageJa: "JSON を読めません" }, 400);
+    }
+    await next();
+  },
+  vValidator("json", RecommendationRequestSchema, (result, c) => {
+    if (!result.success) {
+      const first = result.issues[0];
       return c.json(
-        error.details
-          ? { code: error.code, messageJa: error.messageJa, details: error.details }
-          : { code: error.code, messageJa: error.messageJa },
-        status,
+        { code: "invalid_request" as const, messageJa: first?.message ?? "リクエストが読めません" },
+        400,
       );
     }
-    throw error;
-  }
-});
+  }),
+  async (c) => {
+    const parsed = c.req.valid("json");
+    // スキーマは datasetId を文字列としてしか見ない（値違いは recommend() の
+    // dataset_mismatch=409 に任せるため）。ここで型を合わせるだけで、値は検証しない。
+    // `confirmed?`/`constraints?` は欄ごと省く形で詰め直す。valibot の optional() は
+    // 「値が undefined でもキーはある」形を返すが、こちらの型は「キー自体が無い」の
+    // で、exactOptionalPropertyTypes がそのままの代入を許さない。
+    const body: RecommendationRequest = {
+      datasetId: parsed.datasetId as RecommendationRequest["datasetId"],
+      destination: parsed.destination,
+      participants: parsed.participants.map((p) => ({
+        id: p.id,
+        entry: p.entry,
+        ...(p.confirmed ? { confirmed: p.confirmed } : {}),
+      })),
+      ...(parsed.constraints
+        ? {
+            constraints: {
+              ...(parsed.constraints.accessibility
+                ? { accessibility: parsed.constraints.accessibility }
+                : {}),
+              ...(parsed.constraints.asOf ? { asOf: parsed.constraints.asOf } : {}),
+            },
+          }
+        : {}),
+    };
+    try {
+      return c.json(recommend(dataset, body));
+    } catch (error) {
+      if (error instanceof RecommendError) {
+        return c.json(
+          error.details
+            ? { code: error.code, messageJa: error.messageJa, details: error.details }
+            : { code: error.code, messageJa: error.messageJa },
+          recommendErrorStatus(error.code),
+        );
+      }
+      throw error;
+    }
+  },
+);
 
 // ---------------------------------------------------------------- ルーム
 
 const roomRoutes = app
+  .get("/v1/catalog", (c) => c.json(publicCatalog(dataset)))
+
   .post("/v1/rooms", vValidator("json", CreateRoomSchema), async (c) => {
     const roomId = crypto.randomUUID();
     const inviteUrl = new URL(`/r/${roomId}`, c.req.url).toString();
@@ -117,6 +177,16 @@ const roomRoutes = app
     const r = await callRoom<Room>(c.env, c.req.param("id"), "/", { method: "GET" });
     if (!r.ok) return c.json(r.error, statusOf(r.error.code));
     return c.json(r.value);
+  })
+
+  /**
+   * 通知用の WebSocket。101 の応答は `callRoom`（JSON に読み直す）に乗らないので、
+   * この口だけ DO の fetch をそのまま返す。ヘッダ（Upgrade 含む）だけを転送し、
+   * DO 側の `/ws` がアップグレード前の 404/410 と Upgrade ヘッダの有無を見る。
+   */
+  .get("/v1/rooms/:id/ws", async (c) => {
+    const forwarded = new Request("https://room/ws", { headers: c.req.raw.headers });
+    return roomStub(c.env, c.req.param("id")).fetch(forwarded);
   })
 
   .post("/v1/rooms/:id/participants", vValidator("json", JoinSchema), async (c) => {
@@ -174,60 +244,42 @@ const roomRoutes = app
   /**
    * ルームの状態から推薦を作る。保存しない。
    * 人が増えたり到着情報が変わるたびに変わるので、都度計算する。
+   * 中身は `buildRoomRecommendations`（純関数）。ここは HTTP の形に直すだけ。
    */
   .get("/v1/rooms/:id/recommendations", async (c) => {
-    if (!dataset) {
-      return c.json(
-        { code: "dataset_mismatch" as const, messageJa: "データセットが読み込まれていません" },
-        503,
-      );
-    }
     const r = await callRoom<Room>(c.env, c.req.param("id"), "/", { method: "GET" });
     if (!r.ok) return c.json(r.error, statusOf(r.error.code));
-    const room = r.value;
-
-    const ready = room.participants.filter((p) => p.entry !== null);
-    if (ready.length < 2) {
-      return c.json(
-        {
-          code: "not_enough_participants" as const,
-          messageJa: "到着情報がそろっていません",
-          details: { waitingFor: room.participants.filter((p) => p.entry === null).map((p) => p.id) },
-        },
-        409,
-      );
-    }
+    const limit = parseRoomRecommendationsLimit(c.req.query("limit"));
 
     try {
-      return c.json(
-        recommend(dataset, {
-          datasetId: room.datasetId,
-          destination: { kind: "catalog", id: room.destination.catalogId ?? "" },
-          participants: ready.map((p) => ({
-            id: p.id,
-            entry: p.entry!,
-            ...(p.confirmed ? { confirmed: p.confirmed } : {}),
-          })),
-        }),
-      );
+      return c.json(buildRoomRecommendations(dataset, r.value, limit));
     } catch (error) {
       if (error instanceof RecommendError) {
-        const status =
-          error.code === "dataset_mismatch"
-            ? 409
-            : error.code === "disconnected" || error.code === "no_feasible_meeting"
-              ? 422
-              : 400;
-        return c.json({ code: error.code, messageJa: error.messageJa }, status);
+        return c.json(
+          error.details
+            ? { code: error.code, messageJa: error.messageJa, details: error.details }
+            : { code: error.code, messageJa: error.messageJa },
+          recommendErrorStatus(error.code),
+        );
       }
       if (error instanceof RoomError) {
-        return c.json({ code: error.code, messageJa: error.messageJa }, statusOf(error.code));
+        return c.json(
+          error.details
+            ? { code: error.code, messageJa: error.messageJa, details: error.details }
+            : { code: error.code, messageJa: error.messageJa },
+          statusOf(error.code),
+        );
       }
       throw error;
     }
   });
 
-/** Hono RPC が使う型。フロントはこれを import して口を叩く。 */
+/**
+ * Hono RPC 用の型。ただし web はこれを import していない —
+ * `AppType` は `DurableObjectNamespace` を参照していて、web 側の tsc からは解決できない。
+ * web は `contract.ts` / `room.ts` の型だけを type-only import し、素の fetch で叩く
+ * （`apps/web/src/api.ts`）。ここでは型を捨てないために export だけ残す。
+ */
 export type AppType = typeof roomRoutes;
 
 export default app;

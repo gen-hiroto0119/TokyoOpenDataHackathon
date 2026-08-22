@@ -134,6 +134,7 @@ export type RoomErrorCode =
   | "forbidden"
   | "room_not_found"
   | "not_enough_participants"
+  | "preset_destination_required"
   | "room_expired";
 
 export type RoomErrorResponse = {
@@ -163,6 +164,7 @@ export function statusOf(code: RoomErrorCode): 400 | 401 | 403 | 404 | 409 | 410
     case "room_not_found":
       return 404;
     case "not_enough_participants":
+    case "preset_destination_required":
       return 409;
     case "room_expired":
       return 410;

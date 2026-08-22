@@ -30,7 +30,10 @@ export class RoomObject {
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: unknown,
-  ) {}
+  ) {
+    // ping には pong を自動応答する。休止中でも起こさずに済む。
+    this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+  }
 
   private async load(): Promise<Stored | null> {
     return (await this.state.storage.get<Stored>(KEY)) ?? null;
@@ -40,6 +43,38 @@ export class RoomObject {
     await this.state.storage.put(KEY, stored);
     // 期限に消す。更新のたびに張り直す。
     await this.state.storage.setAlarm(Date.parse(stored.room.expiresAt));
+    this.broadcast({ type: "room_updated", updatedAt: stored.room.updatedAt });
+  }
+
+  /** 状態が変わったことだけを押す。中身は取り直させる。 */
+  private broadcast(payload: { type: "room_updated"; updatedAt: string }): void {
+    const message = JSON.stringify(payload);
+    for (const ws of this.state.getWebSockets()) {
+      try {
+        ws.send(message);
+      } catch {
+        // 送れない接続は無視する。片付けは webSocketClose/Error に任せる。
+      }
+    }
+  }
+
+  /**
+   * 期限切れ(4410)・解散(4404)で全接続を閉じる。
+   * close の送信はすぐには完了しない。呼び出し側はこの直後に
+   * `storage.deleteAll()` で DO 自体を消すため、先に消してしまうと
+   * 閉じたフレームが送り出される前に破棄されうる。一呼吸だけ待つ。
+   */
+  private async closeAll(code: number, reason: string): Promise<void> {
+    const sockets = this.state.getWebSockets();
+    if (sockets.length === 0) return;
+    for (const ws of sockets) {
+      try {
+        ws.close(code, reason);
+      } catch {
+        // すでに閉じている接続は無視する。
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
   /** 期限を過ぎたルームは消える。alarm が遅れても読ませない。 */
@@ -63,7 +98,34 @@ export class RoomObject {
   }
 
   async alarm(): Promise<void> {
+    await this.closeAll(4410, "room_expired");
     await this.state.storage.deleteAll();
+  }
+
+  // ------------------------------------------------------- WebSocket Hibernation
+
+  /** クライアントからのメッセージは読まない。 */
+  async webSocketMessage(_ws: WebSocket, _message: string | ArrayBuffer): Promise<void> {}
+
+  async webSocketClose(
+    ws: WebSocket,
+    code: number,
+    reason: string,
+    _wasClean: boolean,
+  ): Promise<void> {
+    try {
+      ws.close(code, reason);
+    } catch {
+      // すでに閉じている。
+    }
+  }
+
+  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    try {
+      ws.close();
+    } catch {
+      // すでに閉じている。
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -136,6 +198,17 @@ export class RoomObject {
       return Response.json(stored.room);
     }
 
+    // 通知。状態は流さず「変わった」だけを押す。読み取りと同じくトークンは要らない。
+    if (request.method === "GET" && path === "/ws") {
+      const upgrade = request.headers.get("Upgrade");
+      if (!upgrade || upgrade.toLowerCase() !== "websocket") {
+        throw new RoomError("invalid_request", "WebSocket 接続だけを受け付けます");
+      }
+      const { 0: client, 1: server } = new WebSocketPair();
+      this.state.acceptWebSocket(server);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
     if (request.method === "POST" && path === "/participants") {
       const body = (await request.json()) as JoinInput;
       const participantId = crypto.randomUUID();
@@ -186,6 +259,7 @@ export class RoomObject {
         }
         // 主催者が抜けるとルームごと終わる。残った人だけでは決められない。
         if (target.role === "host") {
+          await this.closeAll(4404, "room_dissolved");
           await this.state.storage.deleteAll();
           return new Response(null, { status: 204 });
         }
@@ -214,6 +288,7 @@ export class RoomObject {
       }
 
       if (request.method === "DELETE") {
+        await this.closeAll(4404, "room_dissolved");
         await this.state.storage.deleteAll();
         return new Response(null, { status: 204 });
       }

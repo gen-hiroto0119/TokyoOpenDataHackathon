@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { RecommendationRequest } from "../src/contract.js";
 import { RecommendError, recommend } from "../src/recommend.js";
+import { directedFixture } from "./directed-fixture.js";
 import { fixture } from "./fixture.js";
+import { tieFixture } from "./tie-fixture.js";
 
 const representative: RecommendationRequest = {
   datasetId: "tokyo.shinjuku-terminal",
@@ -131,9 +133,56 @@ describe("出口は目的地から絞り、歩く距離で決める", () => {
 
   it("集合場所から出口までの経路を返す", () => {
     const top = recommend(fixture, representative).ranked[0]!;
-    expect(top.onward.pathNodeIds[0]).toBe("e.west");
-    expect(top.onward.pathNodeIds.at(-1)).toBe(top.meeting.nodeId);
+    expect(top.onward.pathNodeIds[0]).toBe(top.meeting.nodeId);
+    expect(top.onward.pathNodeIds.at(-1)).toBe(top.onward.exit.nodeId);
     expect(top.onward.distanceM).toBeGreaterThan(0);
+  });
+});
+
+describe("有向辺の出口探索", () => {
+  const twoPeople: RecommendationRequest = {
+    datasetId: "tokyo.shinjuku-terminal",
+    destination: { kind: "catalog", id: "dest.west" },
+    participants: [
+      { id: "a", entry: { kind: "catalog", id: "entry.a" } },
+      { id: "b", entry: { kind: "catalog", id: "entry.b" } },
+    ],
+  };
+
+  it("集合場所→出口だけ通れる辺を使い、経路は集合場所始まり・出口終わり", () => {
+    const top = recommend(directedFixture, twoPeople).ranked[0]!;
+    expect(top.onward.pathNodeIds[0]).toBe("m.meet");
+    expect(top.onward.pathNodeIds.at(-1)).toBe("e.west");
+    expect(top.onward.pathNodeIds).toEqual(["m.meet", "e.west"]);
+    expect(top.onward.distanceM).toBe(50);
+    expect(top.onward.exit.nodeId).toBe("e.west");
+  });
+
+  it("出口→集合場所だけ通れる辺は使わない", () => {
+    const trapDest = recommend(directedFixture, {
+      ...twoPeople,
+      destination: { kind: "catalog", id: "dest.trap" },
+    }).ranked[0]!;
+    expect(trapDest.onward.exit.nodeId).not.toBe("e.trap");
+    expect(trapDest.onward.pathNodeIds).not.toContain("e.trap");
+    expect(trapDest.onward.pathNodeIds[0]).toBe("m.meet");
+    expect(["e.west", "e.east"]).toContain(trapDest.onward.pathNodeIds.at(-1));
+  });
+
+  it("目的地を変えても legs[].distanceM は変わらない", () => {
+    const west = recommend(directedFixture, twoPeople);
+    const east = recommend(directedFixture, {
+      ...twoPeople,
+      destination: { kind: "catalog", id: "dest.east" },
+    });
+    expect(west.ranked[0]!.onward.exit.nodeId).toBe("e.west");
+    expect(east.ranked[0]!.onward.exit.nodeId).toBe("e.east");
+    expect(east.ranked[0]!.onward.distanceM).toBe(40);
+
+    const distances = (res: ReturnType<typeof recommend>) =>
+      Object.fromEntries(res.ranked[0]!.legs.map((l) => [l.participantId, l.distanceM]));
+    expect(distances(east)).toEqual(distances(west));
+    expect(distances(west)).toEqual({ a: 80, b: 90 });
   });
 });
 
@@ -196,11 +245,17 @@ describe("手順", () => {
     expect(leg.steps[0]).toMatchObject({ kind: "landmark", nodeId: "g.maru.west", distanceM: 0 });
   });
 
-  it("名前のない通路は 1 つの move にまとまる", () => {
-    expect(leg.pathNodeIds).toContain("u1");
+  it("名前のない通路は 1 つの move にまとまる。次数では区切らないので、行き止まり枝を持つ分岐点(branch)も名前や曲がりが無ければ区切りにならない", () => {
+    expect(leg.pathNodeIds).toEqual(["g.maru.west", "hall", "u1", "branch", "m.koban"]);
     expect(leg.steps.map((s) => s.nodeId)).not.toContain("u1");
-    const toBranch = leg.steps.find((s) => s.nodeId === "branch")!;
-    expect(toBranch.distanceM).toBe(100);
+    // "branch" は行き止まり枝(m.board)を持つので実分岐(次数3)だが、次数では
+    // steps を区切らない。座標上は g.maru.west → hall で少し曲がる以外まっすぐ
+    // なので、hall で 1 度だけ区切られ、u1・branch は素通りして move にまとまる。
+    expect(leg.steps.map((s) => s.nodeId)).not.toContain("branch");
+    const toHall = leg.steps.find((s) => s.nodeId === "hall")!;
+    expect(toHall).toMatchObject({ kind: "move", turn: "slight_right", distanceM: 120 });
+    // 最後の landmark(集合地点)までの距離には、素通りした u1→branch→m.koban ぶんが乗る。
+    expect(leg.steps.at(-1)).toMatchObject({ nodeId: "m.koban", distanceM: 180 });
   });
 
   it("最後の手順は集合地点", () => {
@@ -255,5 +310,77 @@ describe("エラー", () => {
     expect(() =>
       recommend(fixture, { ...representative, datasetId: "other" as never }),
     ).toThrowError(expect.objectContaining({ code: "dataset_mismatch" }));
+  });
+});
+
+describe("reasons は 1 位だけ", () => {
+  it("2 位以降の reasons は空", () => {
+    const res = recommend(fixture, representative);
+    expect(res.ranked.length).toBeGreaterThan(1);
+    expect(res.ranked[0]!.reasons.length).toBeGreaterThan(0);
+    for (const r of res.ranked.slice(1)) {
+      expect(r.reasons).toEqual([]);
+    }
+  });
+});
+
+describe("改札の同点は決定的（F7）", () => {
+  const tieRequest: RecommendationRequest = {
+    datasetId: "tokyo.shinjuku-terminal",
+    destination: { kind: "catalog", id: "dest.somewhere" },
+    participants: [
+      { id: "tie", entry: { kind: "line", id: "line.tie" } },
+      { id: "other", entry: { kind: "line", id: "line.b" } },
+    ],
+  };
+
+  it("同距離のとき z.gate が選ばれる（nodeId の辞書順ではない）", () => {
+    const res = recommend(tieFixture, tieRequest);
+    const top = res.ranked.find((r) => r.meeting.catalogId === "meet.m")!;
+    const tie = top.legs.find((l) => l.participantId === "tie")!;
+    expect(tie.entry.nodeId).toBe("z.gate");
+    expect(tie.distanceM).toBe(100);
+  });
+
+  it("二回実行しても同じ改札が選ばれる", () => {
+    const a = recommend(tieFixture, tieRequest);
+    const b = recommend(tieFixture, tieRequest);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+});
+
+describe("infeasible の原因判定（F4）", () => {
+  const tieRequest: RecommendationRequest = {
+    datasetId: "tokyo.shinjuku-terminal",
+    destination: { kind: "catalog", id: "dest.somewhere" },
+    participants: [
+      { id: "tie", entry: { kind: "line", id: "line.tie" } },
+      { id: "other", entry: { kind: "line", id: "line.b" } },
+    ],
+  };
+
+  it("孤立ノードは制約が無くても unreachable", () => {
+    const res = recommend(tieFixture, tieRequest);
+    expect(res.infeasible).toContainEqual({
+      nodeId: "isolated",
+      nameJa: "孤立広場",
+      reason: "unreachable",
+      textJa: "全員が行ける経路がありません",
+    });
+  });
+
+  it("出口側の欠けは、制約を緩めても届かないので unreachable のまま（step_free のせいにしない）", () => {
+    const res = recommend(tieFixture, {
+      ...tieRequest,
+      constraints: { accessibility: "step_free" },
+    });
+    // onlyexit は参加者からは m 経由で届くが、出口への辺が無い。
+    // 参加者側だけを見る旧ロジックだと、ここが誤って reason:"step_free" になっていた。
+    expect(res.infeasible).toContainEqual({
+      nodeId: "onlyexit",
+      nameJa: "出口への辺が無い広場",
+      reason: "unreachable",
+      textJa: "全員が行ける経路がありません",
+    });
   });
 });

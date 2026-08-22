@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -7,15 +7,14 @@ import type { Catalog, Dataset, Graph } from "../src/graph.js";
 import { recommend } from "../src/recommend.js";
 
 /**
- * 実データのテスト。リポジトリルートの `data/graph/*.json` があるときだけ走る。
- * 作り方は `tools/ingest`。ZIP はリポジトリに入れない。
+ * 実データのテスト。`apps/worker/data/*.json` を読む。
+ * 作り方は `tools/ingest`（出力先は `apps/worker/data`）。ZIP はリポジトリに入れない。
  */
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
-const GRAPH = join(repoRoot, "data/graph/graph.json");
-const CATALOG = join(repoRoot, "data/graph/catalog.json");
-const ready = existsSync(GRAPH) && existsSync(CATALOG);
+const dataDir = join(dirname(fileURLToPath(import.meta.url)), "../data");
+const GRAPH = join(dataDir, "graph.json");
+const CATALOG = join(dataDir, "catalog.json");
 
-describe.skipIf(!ready)("実データ", () => {
+describe("実データ", () => {
   const dataset: Dataset = {
     graph: JSON.parse(readFileSync(GRAPH, "utf8")) as Graph,
     catalog: JSON.parse(readFileSync(CATALOG, "utf8")) as Catalog,

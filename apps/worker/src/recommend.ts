@@ -11,8 +11,9 @@ import type {
   StepVertical,
 } from "./contract.js";
 import {
+  branchDegrees,
   buildAdjacency,
-  degrees,
+  buildReverseAdjacency,
   indexLinks,
   indexNodes,
   type Adjacency,
@@ -49,6 +50,10 @@ const REASON_TEXT: Record<ReasonCode, string> = {
   min_sum: "全員の合計が最も短い",
   onward: "地上に出るまでが最も短い",
   landmark: "説明しやすい地点",
+  // infeasible[].reason 専用。ranked[].reasons の decidingReason はこの値を返さない
+  // （textJa は下の infeasible 組み立てで直接組む。ここは Record<ReasonCode, ...> を
+  // 網羅させるためだけの定義）。
+  unreachable: "全員が行ける経路がありません",
   step_free: "段差なしで行ける",
   hours: "いまの時間帯に通れる",
 };
@@ -217,7 +222,9 @@ function tracePath(target: string, reached: Map<string, Reached>): { nodeIds: st
 
 // ---------------------------------------------------------------- 手順
 
-function angleDeg(from: GraphNode, via: GraphNode, to: GraphNode): number {
+type XY = { x: number; y: number };
+
+function angleDeg(from: XY, via: XY, to: XY): number {
   const ax = via.x - from.x;
   const ay = via.y - from.y;
   const bx = to.x - via.x;
@@ -241,9 +248,168 @@ function verticalOf(link: GraphLink): StepVertical {
   return "none";
 }
 
+/** (0,0) は座標未取得のセンチネル。ingest がノードの座標を取れなかった印。 */
+function isSentinel(p: XY): boolean {
+  return p.x === 0 && p.y === 0;
+}
+
+/**
+ * 経路 1 本ぶんの「クリーン座標列」を作る。`nodeIds` と同じ長さ・同じ並びで返す。
+ *
+ * 1. (0,0) センチネル(座標未取得)のノードは、経路上の前後の実座標ノードから
+ *    リンク距離按分で線形補間する。
+ * 2. 連続する辺のなす角が 160° を超える尖点(巨大な地物の代表点への往復)は、
+ *    実在しない迂回として同じ按分補間に置き換える。ノード自体は経路から
+ *    落とさない（steps の対象のまま。座標だけを差し替える）。
+ *
+ * 按分・角度判定は「良い点」（未補間かつ尖点でない）だけを基準にする。
+ * 補間すると新しい尖点が生まれることがあるため、安定するまで数回だけ
+ * やり直す（実データでは 1 経路あたり尖点は 1〜2 個で、すぐ収束する）。
+ */
+function cleanRouteCoordinates(
+  nodeIds: string[],
+  linkIds: string[],
+  nodes: Map<string, GraphNode>,
+  links: Map<string, GraphLink>,
+): XY[] {
+  const n = nodeIds.length;
+  const raw: XY[] = nodeIds.map((id) => {
+    const node = nodes.get(id);
+    return { x: node?.x ?? 0, y: node?.y ?? 0 };
+  });
+  if (n === 0) return raw;
+
+  // 累積距離（先頭ノードからの道のり）。按分の重みに使う。
+  const cum: number[] = [0];
+  for (let i = 0; i < linkIds.length; i++) {
+    cum.push(cum[i]! + (links.get(linkIds[i]!)?.distanceM ?? 0));
+  }
+
+  const coords = raw.slice();
+  const bad = raw.map(isSentinel);
+
+  const fillBad = (): void => {
+    let i = 0;
+    while (i < n) {
+      if (!bad[i]) {
+        i++;
+        continue;
+      }
+      const start = i;
+      let end = i;
+      while (end < n && bad[end]) end++;
+      const beforeIdx = start - 1;
+      const afterIdx = end;
+      const before = beforeIdx >= 0 ? coords[beforeIdx] : undefined;
+      const after = afterIdx < n ? coords[afterIdx] : undefined;
+      for (let j = start; j < end; j++) {
+        if (before && after) {
+          const span = cum[afterIdx]! - cum[beforeIdx]!;
+          const t = span > 0 ? (cum[j]! - cum[beforeIdx]!) / span : 0.5;
+          coords[j] = { x: before.x + (after.x - before.x) * t, y: before.y + (after.y - before.y) * t };
+        } else if (before) {
+          coords[j] = before;
+        } else if (after) {
+          coords[j] = after;
+        }
+      }
+      i = end;
+    }
+  };
+
+  fillBad();
+
+  // 折り返しスパイク除去。同じ地物に寄って同一座標に潰れたノード列がある
+  // ままだと、隣接ノード直参照の角度判定は turn 判定と同じ縮退座標バグに落ちる
+  // （尖った代表点のすぐ隣が同一座標の重複ノードだと、角度が 0 に潰れて
+  // 尖点を見逃す）。「同一座標の連続run＝1 つの地点」としてクラスタにまとめ、
+  // クラスタの代表座標どうしで角度を取る。クラスタ分けは埋め終わった座標の
+  // 値だけで決める（不良点フラグでは分けない）。値だけで見ないと、(0,0) を
+  // 補間で埋めた結果たまたま前後と同じ座標になったノードが不良点フラグの
+  // せいで別クラスタに割れ、そのクラスタどうしの角度が (0,0) ベクトルに
+  // 潰れて尖点を見逃す。160° を超えたらクラスタ全体を「不良点」にして
+  // 埋め直す。新しい尖点が生まれなくなるまで数回だけやり直す
+  // （実データでは 1 経路あたり尖点は 1〜2 個で、すぐ収束する）。
+  for (let pass = 0; pass < 4; pass++) {
+    const clusters: { start: number; end: number }[] = [];
+    let i = 0;
+    while (i < n) {
+      const start = i;
+      let end = i + 1;
+      while (end < n && coords[end]!.x === coords[start]!.x && coords[end]!.y === coords[start]!.y) {
+        end++;
+      }
+      clusters.push({ start, end });
+      i = end;
+    }
+
+    let foundSpike = false;
+    for (let c = 1; c < clusters.length - 1; c++) {
+      const prevRep = coords[clusters[c - 1]!.start]!;
+      const curRep = coords[clusters[c]!.start]!;
+      const nextRep = coords[clusters[c + 1]!.start]!;
+      const deg = Math.abs(angleDeg(prevRep, curRep, nextRep));
+      if (deg > 160) {
+        const { start, end } = clusters[c]!;
+        for (let j = start; j < end; j++) bad[j] = true;
+        foundSpike = true;
+      }
+    }
+    if (!foundSpike) break;
+    fillBad();
+  }
+
+  return coords;
+}
+
+/**
+ * 座標が異なる直近のノードの index を探す。同じ地物に寄って同一座標に
+ * 潰れたノード列で、実在の曲がりを直進と誤らないための参照点。
+ * 見つからなければ null。
+ */
+function nearestDifferentCoordIndex(coords: XY[], from: number, direction: 1 | -1): number | null {
+  const at = coords[from]!;
+  for (let i = from + direction; i >= 0 && i < coords.length; i += direction) {
+    const c = coords[i]!;
+    if (c.x !== at.x || c.y !== at.y) return i;
+  }
+  return null;
+}
+
+/**
+ * 同じ向きの `move` を連続させない。区切りは名前・曲がり・階変化だけで決めるが、
+ * 曲がらずに階変化だけが何度も続くと、隣り合う区切りがどちらも
+ * `turn: "straight"` の無名 `move`（＝実際には曲がっていない「直進する」move）に
+ * なりうる。そうした隣接ペアだけ 1 つに畳む。実際に曲がる move（`turn` が
+ * `straight` でない）は同じ向きが連続しても畳まない。それぞれが現地で踏む
+ * 別々の曲がり角であり、`kind: "landmark"` 同様それ自体が意味を持つ。
+ */
+function mergeSameDirectionMoves(steps: Step[]): Step[] {
+  const out: Step[] = [];
+  for (const step of steps) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.kind === "move" &&
+      step.kind === "move" &&
+      prev.turn === "straight" &&
+      step.turn === "straight"
+    ) {
+      prev.distanceM = round1(prev.distanceM + step.distanceM);
+      prev.nodeId = step.nodeId;
+      prev.floorLabel = step.floorLabel;
+      if (step.vertical !== "none") prev.vertical = step.vertical;
+      continue;
+    }
+    out.push({ ...step });
+  }
+  return out;
+}
+
 /**
  * 経路を画面の手順に変える。ノードをそのまま並べない。
- * 区切りは 名前のあるノード / 方向が変わる / 階が変わる / 次数3以上。
+ * 区切りは 名前のあるノード / 実際に曲がる / 階が変わる だけ。次数では区切らない
+ * （網は設備への行き止まり枝が多く、次数で切ると「直進する」move が延々と並ぶ）。
  * 区切りの間の無名ノードは 1 つの move にまとめる。
  */
 function buildSteps(
@@ -251,10 +417,11 @@ function buildSteps(
   linkIds: string[],
   nodes: Map<string, GraphNode>,
   links: Map<string, GraphLink>,
-  degree: Map<string, number>,
 ): Step[] {
   const steps: Step[] = [];
   if (nodeIds.length === 0) return steps;
+
+  const coords = cleanRouteCoordinates(nodeIds, linkIds, nodes, links);
 
   const first = nodes.get(nodeIds[0]!);
   if (first) {
@@ -281,18 +448,28 @@ function buildSteps(
     const v = verticalOf(link);
     if (v !== "none") pendingVertical = v;
 
-    const prev = nodes.get(nodeIds[i]!);
-    const nextNode = i + 1 < linkIds.length ? nodes.get(nodeIds[i + 2]!) : undefined;
-    const deg = degree.get(node.id) ?? 0;
-    const turn = prev && nextNode ? turnOf(angleDeg(prev, node, nextNode)) : "straight";
+    const nodeIdx = i + 1;
+    // 角度は「座標が異なる直近のノード」で取る。同じ地物に寄って同一座標に
+    // 潰れたノード列で、実在の曲がりを直進と誤らない。曲がりは座標が変わった
+    // 最初のノードだけに帰属させる。直前と同じ座標のノードにまで同じ曲がりを
+    // 重複させると、1 つの曲がりが座標クラスタの人数ぶん複製されてしまう。
+    const prevCoord = coords[nodeIdx - 1]!;
+    const curCoord = coords[nodeIdx]!;
+    const arrivesAtNewCoord = curCoord.x !== prevCoord.x || curCoord.y !== prevCoord.y;
+    let turn: StepTurn = "straight";
+    if (arrivesAtNewCoord) {
+      const nextIdx = nearestDifferentCoordIndex(coords, nodeIdx, 1);
+      if (nextIdx !== null) {
+        turn = turnOf(angleDeg(prevCoord, curCoord, coords[nextIdx]!));
+      }
+    }
 
     const isLast = i === linkIds.length - 1;
     const named = node.nameJa !== null;
     const floorChanged = link.deltaZ !== 0;
-    const branches = deg >= 3;
     const turns = turn !== "straight";
 
-    if (named || floorChanged || branches || turns || isLast) {
+    if (named || floorChanged || turns || isLast) {
       steps.push({
         kind: named || isLast ? "landmark" : "move",
         nodeId: node.id,
@@ -307,7 +484,7 @@ function buildSteps(
     }
   }
 
-  return steps;
+  return mergeSameDirectionMoves(steps);
 }
 
 function buildConfirmations(
@@ -315,7 +492,8 @@ function buildConfirmations(
   linkIds: string[],
   nodes: Map<string, GraphNode>,
   links: Map<string, GraphLink>,
-  degree: Map<string, number>,
+  /** 実分岐の次数（{@link branchDegrees}）。行き止まりの枝は数えない。 */
+  branchDegree: Map<string, number>,
   confirmedNodeId: string | null,
 ): ConfirmationPoint[] {
   const out: ConfirmationPoint[] = [];
@@ -331,7 +509,7 @@ function buildConfirmations(
     const link = links.get(linkIds[i]!);
     if (link && link.deltaZ !== 0) push(nodeIds[i]!, "floor");
     const node = nodeIds[i + 1];
-    if (node && (degree.get(node) ?? 0) >= 3) push(node, "branch");
+    if (node && (branchDegree.get(node) ?? 0) >= 3) push(node, "branch");
   }
   if (nodeIds.length > 0) push(nodeIds[nodeIds.length - 1]!, "landmark");
 
@@ -417,7 +595,11 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
   const nodes = indexNodes(graph);
   const links = indexLinks(graph);
   const adjacency = buildAdjacency(graph);
-  const degree = degrees(graph);
+  const reverseAdjacency = buildReverseAdjacency(graph);
+  // 実分岐の次数。行き止まりの枝（設備への袋小路）は数えない。branchCount と
+  // confirmations の branch 判定、旧 steps の区切り判定に使っていたが、
+  // steps は次数で区切らなくなった（docs/RECOMMENDER.md「steps は経路を…」）。
+  const branchDegree = branchDegrees(graph);
 
   const destination = catalog.destinations.find((d) => d.catalogId === request.destination.id);
   if (!destination) {
@@ -497,12 +679,9 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
     });
   }
 
-  // どの出口から出るかは「集合場所から出口までの徒歩 ＋ 出口から目的地までの直線」
-  // の合計が一番短いもの。出口ごとに探索を回すと 72 回になるので、
-  // 各出口の持ち出しコストを目的地までの直線距離にして多点探索を一度だけ回す。
-  // 選ばれた出口は sourceId が持っている。
-  //
-  // 地上ぶんは直線に迂回率を掛けた見積もり。正確な経路は Maps に任せる。
+  // 意味上ほしいのは集合場所→出口。出口から順方向に探すと向きが逆になる。
+  // 逆隣接で全出口を始点にした多点最短を 1 回取り、持ち出しコスト（地上の見積もり）
+  // を始点の初期コストにする。選ばれた出口は sourceId が持っている。
   const exitById = new Map(catalog.exits.map((e) => [e.nodeId, e]));
   const surfaceCost = new Map(
     catalog.exits.map(
@@ -515,11 +694,27 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
   );
   const fromExits = shortestFrom(
     catalog.exits.map((e) => e.nodeId),
-    adjacency,
+    reverseAdjacency,
     links,
     pass,
     surfaceCost,
   );
+
+  // infeasible の原因判定（制約が理由か、そもそもグラフが欠けているか）に使う
+  // 「制約を外したら届くか」を、候補ごとに探索し直さず、参加者ごと(P 回)＋出口側
+  // (1 回)だけ事前計算しておく。候補数ぶん(実データで 242 件)探索を回し直すと、
+  // 段差なし応答が 6 倍以上遅くなる（実測 24ms → 162ms）。
+  const needsCauseCheck = accessibility === "step_free" || asOf !== null;
+  const relaxedReachedByParticipant = needsCauseCheck
+    ? new Map(
+        request.participants.map(
+          (p) => [p.id, shortestFrom(starts.get(p.id)!, adjacency, links, relaxed)] as const,
+        ),
+      )
+    : null;
+  const relaxedFromExits = needsCauseCheck
+    ? shortestFrom(catalog.exits.map((e) => e.nodeId), reverseAdjacency, links, relaxed, surfaceCost)
+    : null;
 
   type Scored = {
     meeting: (typeof catalog.meetings)[number];
@@ -557,7 +752,7 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
       let floorChanges = 0;
       for (const linkId of linkIds) floorChanges += Math.abs(links.get(linkId)?.deltaZ ?? 0);
       let branchCount = 0;
-      for (const nodeId of nodeIds) if ((degree.get(nodeId) ?? 0) >= 3) branchCount++;
+      for (const nodeId of nodeIds) if ((branchDegree.get(nodeId) ?? 0) >= 3) branchCount++;
 
       legs.push({
         participantId: p.id,
@@ -570,7 +765,7 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
         costSeconds: Math.round(reached.distanceM / WALKING_SPEED_MPS),
         floorChanges,
         branchCount,
-        steps: buildSteps(nodeIds, linkIds, nodes, links, degree),
+        steps: buildSteps(nodeIds, linkIds, nodes, links),
         pathNodeIds: nodeIds,
         pathLinkIds: linkIds,
         confirmations: buildConfirmations(
@@ -578,20 +773,25 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
           linkIds,
           nodes,
           links,
-          degree,
+          branchDegree,
           request.participants.find((x) => x.id === p.id)?.confirmed?.id ?? null,
         ),
       });
     }
 
     if (!ok) {
-      // 制約が原因か、そもそも繋がっていないかを分ける。
-      let cause: ReasonCode = "feasible";
-      if (accessibility === "step_free" || asOf !== null) {
-        const relaxedReach = request.participants.every((p) =>
-          shortestFrom(starts.get(p.id)!, adjacency, links, relaxed).has(meeting.nodeId),
+      // 制約が原因か、そもそも繋がっていないか（グラフの欠け）を分ける。
+      // 参加者側（改札→集合場所）・出口側（集合場所→出口）のどちらが落ちていても、
+      // 緩和すれば両方とも届くときだけ制約が原因。それでも届かなければグラフの欠け。
+      let cause: ReasonCode = "unreachable";
+      if (relaxedReachedByParticipant && relaxedFromExits) {
+        const participantsReachRelaxed = request.participants.every((p) =>
+          relaxedReachedByParticipant.get(p.id)!.has(meeting.nodeId),
         );
-        if (relaxedReach) cause = accessibility === "step_free" ? "step_free" : "hours";
+        const exitReachesRelaxed = relaxedFromExits.has(meeting.nodeId);
+        if (participantsReachRelaxed && exitReachesRelaxed) {
+          cause = accessibility === "step_free" ? "step_free" : "hours";
+        }
       }
       infeasible.push({
         nodeId: meeting.nodeId,
@@ -644,20 +844,26 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
   };
 
   const ranked: MeetingCandidate[] = scored.map((s, i) => {
-    const neighbour = scored[i + 1] ?? scored[i - 1];
+    // reasons を入れるのは 1 位だけ（CORE.md）。2 位以降は根拠を並び順で示す。
     const reasons: { code: ReasonCode; textJa: string }[] = [];
-    if (neighbour) {
-      const code = decidingReason(s, neighbour);
-      reasons.push({ code, textJa: REASON_TEXT[code] });
-    } else {
-      reasons.push({ code: "feasible", textJa: REASON_TEXT.feasible });
-    }
-    if (accessibility === "step_free") {
-      reasons.push({ code: "step_free", textJa: REASON_TEXT.step_free });
+    if (i === 0) {
+      const neighbour = scored[1];
+      if (neighbour) {
+        const code = decidingReason(s, neighbour);
+        reasons.push({ code, textJa: REASON_TEXT[code] });
+      } else {
+        reasons.push({ code: "feasible", textJa: REASON_TEXT.feasible });
+      }
+      if (accessibility === "step_free") {
+        reasons.push({ code: "step_free", textJa: REASON_TEXT.step_free });
+      }
     }
     const node = nodes.get(s.meeting.nodeId)!;
     const exit = exitById.get(s.exitNodeId)!;
     const onwardPath = tracePath(s.meeting.nodeId, fromExits);
+    // 逆探索の復元は出口始まりなので、もう一度反転して集合場所→出口にする。
+    onwardPath.nodeIds.reverse();
+    onwardPath.linkIds.reverse();
     return {
       rank: i + 1,
       meeting: {
@@ -678,6 +884,8 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
       onward: {
         distanceM: s.onwardDistanceM,
         pathNodeIds: onwardPath.nodeIds,
+        pathLinkIds: onwardPath.linkIds,
+        steps: buildSteps(onwardPath.nodeIds, onwardPath.linkIds, nodes, links),
         exit: {
           nodeId: exit.nodeId,
           catalogId: exit.catalogId,
