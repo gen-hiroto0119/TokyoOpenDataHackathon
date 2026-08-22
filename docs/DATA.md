@@ -3,7 +3,7 @@
 東京都都市整備局「新宿駅周辺の施設情報及び移動ルート」（CC BY 4.0）を実際に取り込んで数えた結果。
 出典と取得日は [`data/manifests/shinjuku-terminal.json`](../data/manifests/shinjuku-terminal.json)。
 
-数えた日: 2026-08-17。取り込みは [`tools/ingest`](../tools/ingest)（出力は `apps/worker/data`。`data/graph/` は gitignore のまま）。
+数えた日: 2026-08-17。取り込みの正は [`apps/worker/scripts/ingest`](../apps/worker/scripts/ingest)（TypeScript。`pnpm --filter worker ingest`、出力は `apps/worker/data` でコミットする）。元の Go 版 [`tools/ingest`](../tools/ingest) は等価性の参照物として残す（`ingest:compare` がパース後の正規化バイト一致で照合し、差は x/y の浮動小数ノイズ ≤1e-4m のみ。二回実行のバイト一致も検査済み）。検査は `ingest:verify`（V1〜V17。この文書の事実を機械検査にしたもの）。
 
 ## 何が入っているか
 
