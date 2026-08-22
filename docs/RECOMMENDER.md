@@ -121,6 +121,8 @@ HTTP は安定 ID を使う。東京都のノード ID は取り込み後にカ�
 
 **説明しやすさで階層を付ける。** 交番 5、案内所 4、広場・コンコース 3、改札 2、それ以外 1。学習しない。距離が同点のときだけ効く。
 
+**近くの設備は取り込みで測る。** エレベーター(`facility=elevator`)とトイレ(`bathroom` / `universalaccesstoilet` / `ostomate`)の地物に付くノードを始点にして、逆向きの隣接で多点始点最短を 1 回ずつ回す。集合候補ごとに「歩いて何 m か」が出るので、カタログに `elevatorM` / `restroomM` として持つ。直線距離では階をまたぐ設備を近いと誤る。届かないときは `null`。応答では 50m 以内かどうかの真偽にする。**設備は順位に使わない。** 画面に出すだけ。
+
 各地点に `evidence`: `hypothesis` | `field_confirmed` を付ける。**取り込んだ時点ではすべて `hypothesis`。** 仕様書が「調査当時の情報であり、店舗や出入口は現状と違うことがある」と書いているので、現地で確認したものだけ上げる。仮説を実測として返さない。
 
 目的地は集合候補ではない。
@@ -191,7 +193,7 @@ type ExitCatalogEntry = {
 
 網は駅で終わっていて、出口から目的地までは計算できない（都庁は西端の 442m 外）。だから**出口を `origin` にした Google Maps の徒歩経路 URL** を返す。地上の経路と、地下道を通るかどうかは Maps が決める。
 
-目的地は Places で検索して選ぶ。**Places を呼ぶのはクライアントで、この API ではない。** 推薦 Worker が受け取るのは名前と緯度経度だけで、どこから来たかを知らない。だから契約は入力手段に依存しない。
+目的地は Places で検索して選ぶ。**Places を呼ぶのはクライアントで、この API ではない。** 推薦 Worker が受け取るのは名前と緯度経度だけで、どこから来たかを知らない。だから契約は入力手段に依存しない。`destination` は `CatalogRef`(プリセット)か `PlaceRef`(名前と座標)のどちらでもよく、計算は同じ。座標は出口の持ち出しコストに、名前は Maps の `destination` に使う。
 
 クライアント側の条件。
 
@@ -208,7 +210,9 @@ type ExitCatalogEntry = {
 
 ### `GET /v1/catalog`
 
-路線（JR / 京王 / 丸ノ内）と目的地プリセット。グラフ・改札・集合候補・出口は出さない。画面がカタログ ID をハードコードしないため。
+**改札を持つ路線をすべて**と、目的地プリセット。グラフ・改札・集合候補・出口は出さない。画面がカタログ ID をハードコードしないため。
+
+利用者は自分が乗ってきた路線を一覧から選ぶ。**載っていない路線があると、その人は参加できない。** だから代表ケースの 3 路線だけに絞らず、取り込んだ改札が 1 つでもある路線は出す。実データでは JR・京王・丸ノ内・小田急・大江戸の 5 つ。表示名はコードの対応表で持ち、改札があるのに名前が無い路線が出たらテストで落とす（取り込み直しで静かに消えないため）。
 
 ```ts
 type CatalogLine = {
@@ -229,7 +233,24 @@ type CatalogResponse = {
 };
 ```
 
-`lines[].id` は `LineRef.id`（`line.jr` / `line.keio` / `line.marunouchi`）。`destinations` は取り込み後のプリセット。
+`lines[].id` は `LineRef.id`（`line.jr` / `line.keio` / `line.marunouchi` / `line.odakyu` / `line.oedo`）。`destinations` は取り込み後のプリセット。
+
+### `POST /v1/exit-reports`
+
+出口の看板が応答と違ったときに、現地の表示を送る口。[`SCREENS.md`](./SCREENS.md) の「間違っていることを前提にする」を受ける。
+
+```ts
+type ExitReportRequest = {
+  catalogId: string;
+  /** 現地の看板に書いてある文字。空は受けない。 */
+  labelJa: string;
+};
+```
+
+- 認証は要らない。誰でも送れる。書き換えるのはデータではなくログである
+- `catalogId` がカタログの出口に無ければ 400 `unknown_catalog`
+- **受け取ったらログに出すだけで、保存しない。** 取り込みのラベルは人が確かめて `data/labels/exits.json` に戻すもので、送信をそのまま正にしない。仮説を実測として扱わないのと同じ理由
+- 応答は 202。受け付けたことだけを返す
 
 ### `GET /health`
 
@@ -257,6 +278,16 @@ type LineRef = {
   id: string;
 };
 
+/** Places で選んだ目的地。名前と座標だけを受け取る。どこで検索したかは知らない。 */
+type PlaceRef = {
+  kind: "place";
+  nameJa: string;
+  lat: number;
+  lng: number;
+};
+
+type DestinationRef = CatalogRef | PlaceRef;
+
 type ParticipantInput = {
   id: string;
   entry: LineRef | CatalogRef | NodeRef;
@@ -265,7 +296,7 @@ type ParticipantInput = {
 
 type RecommendationRequest = {
   datasetId: "tokyo.shinjuku-terminal";
-  destination: CatalogRef;
+  destination: DestinationRef;
   participants: ParticipantInput[];
   constraints?: {
     accessibility?: Accessibility;
@@ -353,6 +384,14 @@ type MeetingCandidate = {
     nameJa: string;
     floorLabel: string;
     evidence: "hypothesis" | "field_confirmed";
+    facilities: {
+      /** 集合場所から歩いて 50m 以内にエレベーターがある。 */
+      elevator: boolean;
+      /** 同じくトイレ（多機能・オストメイトを含む）。 */
+      restroom: boolean;
+      /** 全員がこの候補まで段差なしで行ける。経路で決まるので取り込みでは決めない。 */
+      stepFree: boolean;
+    };
   };
   scores: {
     maxDistanceM: number;
