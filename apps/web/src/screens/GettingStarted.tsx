@@ -210,7 +210,7 @@ export function GettingStarted({ onStart }: GettingStartedProps) {
           もう迷わない！
         </h1>
         <p className={stylexClassName(type["Body/Prose"], styles.body)}>
-          メンバー全員の到着路線や改札を分析し、全員が 集まりやすい場所をAIが自動で選定します。
+          全員の到着路線から、負担が偏らない集合場所を駅の経路データで選びます。
         </p>
       </div>
       <div className={stylexClassName(styles.spacer)} />

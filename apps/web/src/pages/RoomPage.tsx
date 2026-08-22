@@ -26,7 +26,11 @@ import {
 } from "../room-view.js";
 import { fallbackAnchorNodeId, handoffFrom, hereRowsOf, myLegOf, rowsOfLeg } from "../route-view.js";
 import { ArrivalInfo } from "../screens/ArrivalInfo.js";
-import { CandidateCompare, type CandidateCompareCandidate } from "../screens/CandidateCompare.js";
+import {
+  CandidateCompare,
+  type CandidateCompareCandidate,
+  type CandidateCompareInfeasible,
+} from "../screens/CandidateCompare.js";
 import { Here } from "../screens/Here.js";
 import { JoinConfirm } from "../screens/JoinConfirm.js";
 import { RouteGuide } from "../screens/RouteGuide.js";
@@ -257,6 +261,36 @@ function RoomPageInner({ roomId }: { roomId: string }) {
     }
   }
 
+  // ---------------------------------------------------------- 画面4: 退出・解散
+  const [leaveError, setLeaveError] = useState(false);
+  const [dissolveError, setDissolveError] = useState(false);
+
+  /** 参加者(guest)。確認は取らない — リンクがあれば入り直せる。 */
+  async function handleLeave() {
+    if (!session) return;
+    setLeaveError(false);
+    try {
+      await api.leave(roomId, session.participantId, session.token);
+      clearSession(roomId);
+      navigate("/");
+    } catch (error) {
+      if (!handleUnauthorized(error)) setLeaveError(true);
+    }
+  }
+
+  /** 主催者(host)。RoomStatus 側で確認を出したあとに呼ばれる。 */
+  async function handleDissolve() {
+    if (!session) return;
+    setDissolveError(false);
+    try {
+      await api.dissolve(roomId, session.token);
+      clearSession(roomId);
+      navigate("/");
+    } catch (error) {
+      if (!handleUnauthorized(error)) setDissolveError(true);
+    }
+  }
+
   // ---------------------------------------------------------- 画面5: 集合候補
   const {
     data: recs,
@@ -281,6 +315,8 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   const [confirmError, setConfirmError] = useState(false);
   const [lastConfirmNodeId, setLastConfirmNodeId] = useState<string | null>(null);
   const [exitReport, setExitReport] = useState(() => loadExitReport(roomId));
+  const [correctingExit, setCorrectingExit] = useState(false);
+  const [correctExitError, setCorrectExitError] = useState(false);
 
   async function handleConfirmHere(nodeId: string) {
     if (!session) return;
@@ -315,8 +351,17 @@ function RoomPageInner({ roomId }: { roomId: string }) {
     if (lastConfirmNodeId) void handleConfirmHere(lastConfirmNodeId);
   }
 
-  function handleCorrectExit(exitCatalogId: string) {
-    setExitReport(saveExitReport(roomId, exitCatalogId));
+  async function handleCorrectExit(exitCatalogId: string, labelJa: string) {
+    setCorrectingExit(true);
+    setCorrectExitError(false);
+    try {
+      await api.reportExit(exitCatalogId, labelJa);
+      setExitReport(saveExitReport(roomId, exitCatalogId, labelJa));
+    } catch {
+      setCorrectExitError(true);
+    } finally {
+      setCorrectingExit(false);
+    }
   }
 
   // ---------------------------------------------------------- 画面の導出
@@ -404,6 +449,11 @@ function RoomPageInner({ roomId }: { roomId: string }) {
         meReportSelected={reportSelectedOf(me.report)}
         onMeReportSelect={handleReportSelect}
         others={others}
+        role={session.role}
+        onLeave={handleLeave}
+        leaveError={leaveError}
+        onDissolve={handleDissolve}
+        dissolveError={dissolveError}
         onTabSelect={setTab}
       />
     );
@@ -447,9 +497,11 @@ function RoomPageInner({ roomId }: { roomId: string }) {
         HandoffFrom={handoffFrom(exit.label)}
         HandoffTo={room.destination.nameJa}
         HandoffUncertain={exit.evidence === "hypothesis"}
-        HandoffCorrected={exitReport?.exitCatalogId === exit.catalogId}
+        HandoffReported={exitReport?.exitCatalogId === exit.catalogId}
+        HandoffCorrectBusy={correctingExit}
+        HandoffCorrectError={correctExitError}
         onOpenMap={() => window.open(exit.mapsDirUrl, "_blank", "noopener,noreferrer")}
-        onCorrectExit={() => handleCorrectExit(exit.catalogId)}
+        onCorrectExit={(labelJa) => void handleCorrectExit(exit.catalogId, labelJa)}
         onOpenHere={() => setHereOpen(true)}
         onTabSelect={setTab}
       />
@@ -463,9 +515,14 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   let status: "loading" | "waiting" | "ready" | "error";
   let candidates: CandidateCompareCandidate[] = [];
   let waitingNames: string[] = [];
+  let errorMessage: string | undefined;
+  let infeasible: CandidateCompareInfeasible[] = [];
 
   if (recsError) {
+    // 422 no_feasible_meeting / disconnected 等。サーバーの理由(messageJa)を
+    // そのまま画面5へ渡す — クライアントで文を作らない(推薦理由と同じ方針)。
     status = "error";
+    if (recsError instanceof ApiError) errorMessage = recsError.body.messageJa;
   } else if (!recs) {
     status = "loading";
   } else if (recs.kind === "waiting") {
@@ -474,20 +531,35 @@ function RoomPageInner({ roomId }: { roomId: string }) {
       .map((id) => nameOf(room.participants, id))
       .filter((n) => n.length > 0);
   } else {
-    status = "ready";
-    candidates = recs.data.ranked.map((c, index) => ({
-      nodeId: c.meeting.nodeId,
-      Name: c.meeting.nameJa,
-      Floor: c.meeting.floorLabel,
-      Reason: index === 0 ? (c.reasons[0]?.textJa ?? "") : "",
-      Facts: factsLabel(c.onward.distanceM, recs.data.walkingSpeedMps),
-      People: c.legs.map((leg) => ({
-        Who: nameOf(room.participants, leg.participantId),
-        Minutes: minutesLabel(leg.costSeconds),
-        Effort: effortLabel(leg.floorChanges, leg.branchCount),
-      })),
-      Selected: room.meetingNodeId !== null && c.meeting.nodeId === room.meetingNodeId,
+    infeasible = recs.data.infeasible.map((p) => ({
+      nodeId: p.nodeId,
+      Name: p.nameJa,
+      Reason: p.textJa,
     }));
+    if (recs.data.ranked.length === 0) {
+      // 応答は返ったが候補ゼロ。エラーと同じ扱いにする(サーバーからの理由は無い)。
+      status = "error";
+    } else {
+      status = "ready";
+      candidates = recs.data.ranked.map((c, index) => ({
+        nodeId: c.meeting.nodeId,
+        Name: c.meeting.nameJa,
+        Floor: c.meeting.floorLabel,
+        Reason: index === 0 ? (c.reasons[0]?.textJa ?? "") : "",
+        Facts: factsLabel(c.onward.distanceM, recs.data.walkingSpeedMps),
+        // facilities はまだ応答に無いことがある(worker 側の契約拡張が別作業中)。
+        // 無くても壊れないよう、既定は false にする。設備は順位に使わない(docs/RECOMMENDER.md)。
+        ShowElevator: c.meeting.facilities?.elevator ?? false,
+        ShowRestroom: c.meeting.facilities?.restroom ?? false,
+        ShowStepFree: c.meeting.facilities?.stepFree ?? false,
+        People: c.legs.map((leg) => ({
+          Who: nameOf(room.participants, leg.participantId),
+          Minutes: minutesLabel(leg.costSeconds),
+          Effort: effortLabel(leg.floorChanges, leg.branchCount),
+        })),
+        Selected: room.meetingNodeId !== null && c.meeting.nodeId === room.meetingNodeId,
+      }));
+    }
   }
 
   return (
@@ -496,6 +568,8 @@ function RoomPageInner({ roomId }: { roomId: string }) {
       status={status}
       candidates={candidates}
       waitingNames={waitingNames}
+      errorMessage={errorMessage}
+      infeasible={infeasible}
       onChoose={handleChoose}
       onRetry={() => void mutateRecs()}
       onTabSelect={setTab}

@@ -51,9 +51,14 @@ export type RouteGuideProps = {
   HandoffFrom?: string;
   HandoffTo?: string;
   HandoffUncertain?: boolean;
-  HandoffCorrected?: boolean;
+  /** 「表示が違う」の送信がすでに済んだ。 */
+  HandoffReported?: boolean;
+  /** 送信中。 */
+  HandoffCorrectBusy?: boolean;
+  /** 直前の送信が失敗した。 */
+  HandoffCorrectError?: boolean;
   onOpenMap?: () => void;
-  onCorrectExit?: () => void;
+  onCorrectExit?: (labelJa: string) => void;
   onOpenHere?: () => void;
   onTabSelect?: (selected: TabBarSelected) => void;
 };
@@ -320,7 +325,9 @@ export function RouteGuide({
   HandoffFrom = "出口 8 を出たところから",
   HandoffTo = "東京都庁",
   HandoffUncertain = false,
-  HandoffCorrected = false,
+  HandoffReported = false,
+  HandoffCorrectBusy = false,
+  HandoffCorrectError = false,
   onOpenMap,
   onCorrectExit,
   onOpenHere,
@@ -393,7 +400,9 @@ export function RouteGuide({
           To={HandoffTo}
           RemainderJa={remainder}
           Uncertain={HandoffUncertain}
-          Corrected={HandoffCorrected}
+          Reported={HandoffReported}
+          CorrectBusy={HandoffCorrectBusy}
+          CorrectError={HandoffCorrectError}
           onOpenMap={onOpenMap}
           onCorrect={onCorrectExit}
         />

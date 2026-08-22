@@ -1,0 +1,32 @@
+{
+  "lang": "ja",
+  "name": "駅あわせ",
+  "short_name": "駅あわせ",
+  "description": "新宿駅で待ち合わせる人の集合場所と構内の経路を出します。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0f6e64",
+  "background_color": "#eef1f3",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

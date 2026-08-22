@@ -72,12 +72,13 @@ export function setOnboarded(): void {
 
 // -------------------------------------------------------- 出口の表示が違う報告
 //
-// 送信 API は無い(docs/SCREENS.md: 直った内容は data/labels/exits.json に戻す、
-// つまり人手の作業)。ここでは「押した」という事実だけを端末に残し、
-// Handoff の表示を「表示が違う」ボタンから確認済み表示に変える。
+// 送信は POST /v1/exit-reports(api.ts の reportExit)。ここは送信後の
+// 「もう送った」という事実だけを端末に残す — 同じ出口で二度出さないため
+// (docs/RECOMMENDER.md: 送信はログに出すだけで保存しないので、正はここではない)。
 
 export type ExitReport = {
   exitCatalogId: string;
+  labelJa: string;
   at: string;
 };
 
@@ -85,8 +86,8 @@ function exitReportKeyOf(roomId: string): string {
   return `${EXIT_REPORT_PREFIX}${roomId}`;
 }
 
-export function saveExitReport(roomId: string, exitCatalogId: string): ExitReport {
-  const report: ExitReport = { exitCatalogId, at: new Date().toISOString() };
+export function saveExitReport(roomId: string, exitCatalogId: string, labelJa: string): ExitReport {
+  const report: ExitReport = { exitCatalogId, labelJa, at: new Date().toISOString() };
   localStorage.setItem(exitReportKeyOf(roomId), JSON.stringify(report));
   return report;
 }

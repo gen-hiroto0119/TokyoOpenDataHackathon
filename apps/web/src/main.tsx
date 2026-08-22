@@ -10,6 +10,13 @@ import { CacheProvider } from "./swr.js";
 // 起動時に期限切れのルームキーを掃除する。
 sweepExpired();
 
+// PWA 用 Service Worker の登録。dev では HMR を壊すため登録しない。
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js");
+  });
+}
+
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root がありません");

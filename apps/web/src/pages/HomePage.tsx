@@ -3,9 +3,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { mutate as globalMutate } from "swr";
-import type { CatalogDestination } from "worker/src/contract.js";
 import { api } from "../api.js";
-import { DestinationSearch } from "../screens/DestinationSearch.js";
+import { DestinationSearch, type SelectedDestination } from "../screens/DestinationSearch.js";
 import { GettingStarted } from "../screens/GettingStarted.js";
 import { RoomCreate } from "../screens/RoomCreate.js";
 import { isOnboarded, saveSession, setOnboarded } from "../session.js";
@@ -16,7 +15,7 @@ export function HomePage() {
   const [onboarded, setOnboardedState] = useState(isOnboarded());
   const [picking, setPicking] = useState(false);
   const [name, setName] = useState("");
-  const [destination, setDestination] = useState<CatalogDestination | null>(null);
+  const [destination, setDestination] = useState<SelectedDestination | null>(null);
   const [expiresAtIso, setExpiresAtIso] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(false);

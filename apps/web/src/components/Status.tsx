@@ -10,6 +10,8 @@ export type StatusState = "Progress" | "Failed";
 
 export type StatusProps = {
   State?: StatusState;
+  /** サーバーが返した理由(例: messageJa)をそのまま出す。State="Failed" のときだけ意味を持つ。 */
+  Detail?: string;
   onRetry?: () => void;
 };
 
@@ -55,6 +57,10 @@ const styles = stylex.create({
     flexShrink: 1,
     flexBasis: 0,
     minWidth: 0,
+  },
+  detail: {
+    margin: 0,
+    color: color["--color-text-secondary"],
   },
   fill: {
     display: "grid",
@@ -126,13 +132,14 @@ function retrySlot(State: StatusState, onRetry?: () => void) {
   }
 }
 
-export function Status({ State = "Progress", onRetry }: StatusProps) {
+export function Status({ State = "Progress", Detail, onRetry }: StatusProps) {
   return (
     <div className={stylexClassName(styles.root, surface(State))}>
       <div className={stylexClassName(styles.row)}>
         {statusIcon(State)}
         <p className={stylexClassName(type["UI/Medium/Regular"], styles.message)}>{statusMessage(State)}</p>
       </div>
+      {Detail ? <p className={stylexClassName(type["UI/Small/Regular"], styles.detail)}>{Detail}</p> : null}
       {retrySlot(State, onRetry)}
     </div>
   );

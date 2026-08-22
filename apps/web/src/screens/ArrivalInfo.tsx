@@ -74,6 +74,7 @@ export function ArrivalInfo({
         )}
         {wired ? (
           <ArrivalInput
+            ShowReader={false}
             State={lineLabel ? "Read" : "Empty"}
             Value={lineLabel ?? undefined}
             options={lineOptions ?? []}

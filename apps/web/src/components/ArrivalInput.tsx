@@ -13,6 +13,12 @@ export type ArrivalInputProps = {
   /** 選べる路線。省略時はダミーの3路線。 */
   options?: ReadonlyArray<FieldSelectOption>;
   onValueChange?: (value: string | null) => void;
+  /**
+   * 読み取り(スクリーンショットからの自動入力)を出すか。既定は出す。
+   * 読み取りは縦切りに入っていないので、実配線の画面では false にして隠す。
+   * 押しても何も起きない導線を置かないため。
+   */
+  ShowReader?: boolean;
 };
 
 const arrivalLines = [
@@ -74,9 +80,11 @@ export function ArrivalInput({
   Value,
   options = arrivalLines,
   onValueChange,
+  ShowReader = true,
 }: ArrivalInputProps) {
   return (
     <div className={stylexClassName(styles.root)}>
+      {ShowReader ? (
       <Composer
         Label="自分の到着情報"
         Prompt="スクリーンショットで自動入力"
@@ -85,6 +93,7 @@ export function ArrivalInput({
         AddActionLabel="追加する"
         SubmitActionLabel="読み取る"
       />
+      ) : null}
       {lineField(State, Value, options, onValueChange)}
     </div>
   );

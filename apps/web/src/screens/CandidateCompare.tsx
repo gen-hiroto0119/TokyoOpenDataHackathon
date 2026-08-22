@@ -20,9 +20,22 @@ export type CandidateCompareCandidate = {
   Floor: string;
   Reason: string;
   Facts: string;
+  ShowElevator: boolean;
+  ShowRestroom: boolean;
+  ShowStepFree: boolean;
   People: CandidatePersonProps[];
   Selected: boolean;
 };
+
+/** 集合場所にできなかった地点(応答の infeasible[])。 */
+export type CandidateCompareInfeasible = {
+  nodeId: string;
+  Name: string;
+  Reason: string;
+};
+
+/** 上位いくつまで出すか。残りは「ほか N 件」にまとめる。 */
+const INFEASIBLE_SHOWN = 3;
 
 export type CandidateCompareProps = {
   Action?: CandidateAction;
@@ -31,6 +44,10 @@ export type CandidateCompareProps = {
   candidates?: CandidateCompareCandidate[];
   /** 到着情報待ちの参加者名(2人未満のとき)。 */
   waitingNames?: string[];
+  /** status="error" のときのサーバーの理由(messageJa)。無ければ既定文言のみ出す。 */
+  errorMessage?: string;
+  /** 応答の infeasible[]。空なら何も出さない。 */
+  infeasible?: CandidateCompareInfeasible[];
   onChoose?: (nodeId: string) => void;
   onRetry?: () => void;
   onTabSelect?: (selected: TabBarSelected) => void;
@@ -85,6 +102,19 @@ const styles = stylex.create({
     margin: 0,
     color: color["--color-text-secondary"],
   },
+  infeasible: {
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: space["--space-2"],
+    width: "100%",
+    margin: 0,
+  },
+  infeasibleText: {
+    margin: 0,
+    color: color["--color-text-secondary"],
+  },
 });
 
 export function CandidateCompare({
@@ -92,6 +122,8 @@ export function CandidateCompare({
   status,
   candidates,
   waitingNames = [],
+  errorMessage,
+  infeasible = [],
   onChoose,
   onRetry,
   onTabSelect,
@@ -136,7 +168,9 @@ export function CandidateCompare({
       <AppBar Title="集合場所の候補" Back="Shown" />
       <div className={stylexClassName(styles.content)}>
         {status === "loading" ? <Status State="Progress" /> : null}
-        {status === "error" ? <Status State="Failed" onRetry={onRetry} /> : null}
+        {status === "error" ? (
+          <Status State="Failed" Detail={errorMessage} onRetry={onRetry} />
+        ) : null}
         {status === "waiting" ? (
           <div className={stylexClassName(styles.waiting)}>
             <p className={stylexClassName(type["UI/Medium/Regular"], styles.waitingText)}>
@@ -160,9 +194,9 @@ export function CandidateCompare({
                 Floor={c.Floor}
                 Reason={c.Reason}
                 Facts={c.Facts}
-                ShowElevator={false}
-                ShowRestroom={false}
-                ShowStepFree={false}
+                ShowElevator={c.ShowElevator}
+                ShowRestroom={c.ShowRestroom}
+                ShowStepFree={c.ShowStepFree}
                 State={c.Selected ? "Selected" : "Default"}
                 Action={Action}
                 People={c.People}
@@ -170,6 +204,23 @@ export function CandidateCompare({
               />
             ))
           : null}
+        {infeasible.length > 0 ? (
+          <div className={stylexClassName(styles.infeasible)}>
+            {infeasible.slice(0, INFEASIBLE_SHOWN).map((point) => (
+              <p
+                key={point.nodeId}
+                className={stylexClassName(type["UI/Small/Regular"], styles.infeasibleText)}
+              >
+                {point.Name} · {point.Reason}
+              </p>
+            ))}
+            {infeasible.length > INFEASIBLE_SHOWN ? (
+              <p className={stylexClassName(type["UI/Small/Regular"], styles.infeasibleText)}>
+                ほか{infeasible.length - INFEASIBLE_SHOWN}件
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <TabBar Selected="Route" onSelect={onTabSelect} />
     </div>

@@ -4,7 +4,11 @@
 //
 // 型は worker からの type-only import。hono/client は使わない
 // (AppType が DurableObjectNamespace を参照し、web の tsc が解決できないため)。
-import type { CatalogResponse, RecommendationResponse } from "worker/src/contract.js";
+import type {
+  CatalogResponse,
+  ExitReportResponse,
+  RecommendationResponse,
+} from "worker/src/contract.js";
 import type {
   CreateRoomInput,
   CreateRoomResult,
@@ -59,6 +63,14 @@ export const api = {
     request<Room>(`/v1/rooms/${id}`, { method: "PATCH", body: JSON.stringify(patch) }, token),
   leave: (id: string, pid: string, token: string) =>
     request<void>(`/v1/rooms/${id}/participants/${pid}`, { method: "DELETE" }, token),
+  // 解散。主催者だけ。docs/ROOM.md「DELETE /v1/rooms/:id」。
+  dissolve: (id: string, token: string) => request<void>(`/v1/rooms/${id}`, { method: "DELETE" }, token),
   recommendations: (id: string) =>
     request<RecommendationResponse>(`/v1/rooms/${id}/recommendations?limit=10`),
+  // 認証不要。RECOMMENDER.md「表示が違う」: 保存しない、ログに出すだけ。
+  reportExit: (catalogId: string, labelJa: string) =>
+    request<ExitReportResponse>("/v1/exit-reports", {
+      method: "POST",
+      body: JSON.stringify({ catalogId, labelJa }),
+    }),
 };

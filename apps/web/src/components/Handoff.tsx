@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Button as BaseButton } from "@base-ui/react/button";
 import * as stylex from "@stylexjs/stylex";
 import { color } from "../tokens/color.stylex.js";
@@ -5,6 +6,8 @@ import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { Button } from "./Button.js";
+import { ErrorNotice } from "./ErrorNotice.js";
+import { Field } from "./Field.js";
 import { Icon } from "./Icon.js";
 
 export type HandoffState = "Ready" | "Waiting";
@@ -18,10 +21,15 @@ export type HandoffProps = {
   RemainderJa?: string;
   /** 出口の名前が hypothesis(未確認)のとき、断定しない補足行を出す。 */
   Uncertain?: boolean;
-  /** 「表示が違う」をすでに押した。ボタンの代わりに確認済みの表示にする。 */
-  Corrected?: boolean;
+  /** 「表示が違う」の送信がすでに済んだ。入力欄の代わりに送信済みの表示にする。 */
+  Reported?: boolean;
+  /** 送信中は入力欄とボタンを無効にする。 */
+  CorrectBusy?: boolean;
+  /** 直前の送信が失敗した。 */
+  CorrectError?: boolean;
   onOpenMap?: () => void;
-  onCorrect?: () => void;
+  /** 「送る」(ErrorNotice の「もう一度送る」も同じ)。現地の表示の文字を渡す。 */
+  onCorrect?: (labelJa: string) => void;
 };
 
 const styles = stylex.create({
@@ -116,6 +124,14 @@ const styles = stylex.create({
     color: color["--color-text-secondary"],
     flexShrink: 0,
   },
+  correctionForm: {
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: space["--space-4"],
+    width: "100%",
+  },
 });
 
 function noteCopy(State: HandoffState) {
@@ -144,19 +160,59 @@ function buttonState(State: HandoffState) {
   }
 }
 
-function correctionSlot(Corrected: boolean, onCorrect?: () => void) {
-  if (Corrected) {
+/** fromRow の右側。送信済みなら「送りました」、入力欄を開いている間はボタンを隠す
+ * (フォームは route の外に別ブロックで出す)。 */
+function correctionToggle(Reported: boolean, open: boolean, onOpen: () => void) {
+  if (Reported) {
     return (
       <span className={stylexClassName(type["UI/Caption/Regular"], styles.corrected)}>
         <Icon Name="Confirmed" />
-        確認済み
+        送りました
       </span>
     );
   }
+  if (open) return null;
   return (
-    <BaseButton onClick={onCorrect} className={stylexClassName(type["UI/Caption/Regular"], styles.correction)}>
+    <BaseButton onClick={onOpen} className={stylexClassName(type["UI/Caption/Regular"], styles.correction)}>
       表示が違う
     </BaseButton>
+  );
+}
+
+/** 「表示が違う」で開く入力欄。現地の表示を書いて「送る」。失敗は ErrorNotice。 */
+function correctionForm(
+  open: boolean,
+  Reported: boolean,
+  draft: string,
+  onDraftChange: (value: string) => void,
+  busy: boolean,
+  error: boolean,
+  onSubmit: () => void,
+) {
+  if (!open || Reported) return null;
+  const filled = draft.length > 0;
+  const canSubmit = filled && !busy;
+  return (
+    <div className={stylexClassName(styles.correctionForm)}>
+      <Field
+        Label="現地の表示を書く"
+        Value={filled ? draft : "現地の表示を書く"}
+        Content={filled ? "Filled" : "Empty"}
+        showAssistive={false}
+        State={busy ? "Disabled" : "Default"}
+        onValueChange={onDraftChange}
+      />
+      <div className={stylexClassName(styles.fill)}>
+        <Button
+          Label="送る"
+          Size="Medium"
+          Style="Primary"
+          State={canSubmit ? "Default" : "Disabled"}
+          onClick={canSubmit ? onSubmit : undefined}
+        />
+      </div>
+      {error ? <ErrorNotice onRetry={onSubmit} /> : null}
+    </div>
   );
 }
 
@@ -180,21 +236,33 @@ export function Handoff({
   To = "東京都庁",
   RemainderJa,
   Uncertain = false,
-  Corrected = false,
+  Reported = false,
+  CorrectBusy = false,
+  CorrectError = false,
   onOpenMap,
   onCorrect,
 }: HandoffProps) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  function submit() {
+    const value = draft.trim();
+    if (!value || CorrectBusy) return;
+    onCorrect?.(value);
+  }
+
   return (
     <div className={stylexClassName(styles.root)}>
       <div className={stylexClassName(styles.route)}>
         <div className={stylexClassName(styles.fromRow)}>
           <p className={stylexClassName(type["UI/Small/Regular"], styles.from)}>{From}</p>
-          {correctionSlot(Corrected, onCorrect)}
+          {correctionToggle(Reported, open, () => setOpen(true))}
         </div>
         {remainderSlot(RemainderJa)}
         <p className={stylexClassName(type["Wayfinding/Landmark"], styles.to)}>{To}</p>
         {uncertainSlot(Uncertain)}
       </div>
+      {correctionForm(open, Reported, draft, setDraft, CorrectBusy, CorrectError, submit)}
       <p className={stylexClassName(type["UI/Small/Regular"], styles.note)}>{noteCopy(State)}</p>
       <div className={stylexClassName(styles.fill)}>
         <Button

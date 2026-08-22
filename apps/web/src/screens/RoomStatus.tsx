@@ -1,9 +1,14 @@
+import { useState } from "react";
 import * as stylex from "@stylexjs/stylex";
+import type { RoomRole } from "worker/src/room.js";
 import { color } from "../tokens/color.stylex.js";
 import { space } from "../tokens/space.stylex.js";
+import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { AppBar } from "../components/AppBar.js";
 import { Arrival, type ArrivalProgress } from "../components/Arrival.js";
+import { Button } from "../components/Button.js";
+import { ErrorNotice } from "../components/ErrorNotice.js";
 import { Place } from "../components/Place.js";
 import { Report, type ReportSelected } from "../components/Report.js";
 import { TabBar, type TabBarSelected } from "../components/TabBar.js";
@@ -25,6 +30,15 @@ export type RoomStatusProps = {
   onMeReportSelect?: (selected: Exclude<ReportSelected, "None">) => void;
   /** 自分以外の参加者。省略時はダミー表示のまま。 */
   others?: RoomStatusParticipantView[];
+  /** 自分の役割。guest は「ルームから抜ける」、host は「ルームを解散する」を出す。 */
+  role?: RoomRole;
+  onLeave?: () => void;
+  /** 直前の退出が失敗した。 */
+  leaveError?: boolean;
+  /** 解散の確認で「解散する」を押したときに呼ぶ。 */
+  onDissolve?: () => void;
+  /** 直前の解散が失敗した。 */
+  dissolveError?: boolean;
   onTabSelect?: (selected: TabBarSelected) => void;
 };
 
@@ -59,6 +73,30 @@ const styles = stylex.create({
     gap: space["--space-4"],
     width: "100%",
   },
+  fill: {
+    display: "grid",
+    width: "100%",
+  },
+  confirm: {
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: space["--space-4"],
+    width: "100%",
+  },
+  confirmText: {
+    margin: 0,
+    color: color["--color-text-secondary"],
+  },
+  actions: {
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space["--space-4"],
+    width: "100%",
+  },
 });
 
 export function RoomStatus({
@@ -67,9 +105,15 @@ export function RoomStatus({
   meReportSelected,
   onMeReportSelect,
   others,
+  role,
+  onLeave,
+  leaveError,
+  onDissolve,
+  dissolveError,
   onTabSelect,
 }: RoomStatusProps) {
   const wired = others !== undefined;
+  const [confirmingDissolve, setConfirmingDissolve] = useState(false);
 
   if (!wired) {
     return (
@@ -139,6 +183,46 @@ export function RoomStatus({
             Report={p.Report}
           />
         ))}
+        {role === "guest" ? (
+          <>
+            <div className={stylexClassName(styles.fill)}>
+              <Button Label="ルームから抜ける" Size="Medium" Style="Secondary" onClick={onLeave} />
+            </div>
+            {leaveError ? <ErrorNotice onRetry={onLeave} /> : null}
+          </>
+        ) : null}
+        {role === "host" ? (
+          confirmingDissolve ? (
+            <div className={stylexClassName(styles.confirm)}>
+              <p className={stylexClassName(type["UI/Small/Regular"], styles.confirmText)}>
+                解散すると、参加者全員が開けなくなります
+              </p>
+              <div className={stylexClassName(styles.actions)}>
+                <div className={stylexClassName(styles.fill)}>
+                  <Button Label="解散する" Size="Medium" Style="Primary" onClick={onDissolve} />
+                </div>
+                <div className={stylexClassName(styles.fill)}>
+                  <Button
+                    Label="やめる"
+                    Size="Medium"
+                    Style="Secondary"
+                    onClick={() => setConfirmingDissolve(false)}
+                  />
+                </div>
+              </div>
+              {dissolveError ? <ErrorNotice onRetry={onDissolve} /> : null}
+            </div>
+          ) : (
+            <div className={stylexClassName(styles.fill)}>
+              <Button
+                Label="ルームを解散する"
+                Size="Medium"
+                Style="Secondary"
+                onClick={() => setConfirmingDissolve(true)}
+              />
+            </div>
+          )
+        ) : null}
       </div>
       <TabBar Selected="Room" onSelect={onTabSelect} />
     </div>
