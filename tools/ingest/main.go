@@ -303,7 +303,7 @@ func slug(s string) string {
 
 func main() {
 	in := flag.String("in", "data/raw/extracted", "展開済みの東京都データ")
-	out := flag.String("out", "data/graph", "出力先")
+	out := flag.String("out", "apps/worker/data", "出力先。Worker が起動時に import する")
 	labelPath := flag.String("labels", "data/labels/exits.json", "手で付けた出口のラベル")
 	version := flag.String("version", "2023-02-20", "配布データの版")
 	hash := flag.String("hash", "", "ZIP の SHA-256")
