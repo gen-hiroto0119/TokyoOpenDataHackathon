@@ -10,6 +10,14 @@
 //
 // 実行: `node scripts/ingest/compare.ts --ref <dir> --out <dir>`
 // --ref 省略時はリポジトリルートの apps/worker/data(コミット済みの Go 出力)。
+//
+// 除外フィールド: catalog.json の meetings[].elevatorM / meetings[].restroomM。
+// この2つは Go 版(tools/ingest/main.go、移植元・変更禁止)には無い TS 側だけの
+// 新規機能(近くの設備を集合候補ごとに測る。docs/RECOMMENDER.md「近くの設備は
+// 取り込みで測る」)で、Go 出力には最初からキー自体が無い。等価ゲートは「移植の
+// 正しさ」を守るためのもので、移植後に足した機能まで Go とのバイト一致を求める
+// ものではないので、この2フィールドだけ比較から外す(値の有無や中身は
+// verify.ts の V18、および apps/worker/test/real-golden.test.ts のゴールデンで確認する)。
 
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -39,7 +47,22 @@ type Mismatch = { path: string; a: unknown; b: unknown };
 
 const XY_PATH = /^nodes\[\d+\]\.(x|y)$/;
 
-function diff(a: unknown, b: unknown, path: string, mismatches: Mismatch[], rescued: { count: number }): void {
+/** Go 版に無い新規フィールド。比較から除外する(理由は本ファイル冒頭のコメント)。 */
+const EXCLUDED_FIELD_NAMES = ["elevatorM", "restroomM"];
+const EXCLUDED_PATH = /^meetings\[\d+\]\.(elevatorM|restroomM)$/;
+
+function diff(
+  a: unknown,
+  b: unknown,
+  path: string,
+  mismatches: Mismatch[],
+  rescued: { count: number },
+  excluded: { count: number },
+): void {
+  if (EXCLUDED_PATH.test(path)) {
+    excluded.count++;
+    return;
+  }
   if (a === b) return;
 
   if (typeof a === "number" && typeof b === "number") {
@@ -56,14 +79,21 @@ function diff(a: unknown, b: unknown, path: string, mismatches: Mismatch[], resc
       mismatches.push({ path: `${path}.length`, a: a.length, b: b.length });
       return;
     }
-    for (let i = 0; i < a.length; i++) diff(a[i], b[i], `${path}[${i}]`, mismatches, rescued);
+    for (let i = 0; i < a.length; i++) diff(a[i], b[i], `${path}[${i}]`, mismatches, rescued, excluded);
     return;
   }
 
   if (a !== null && b !== null && typeof a === "object" && typeof b === "object") {
     const keys = new Set([...Object.keys(a as object), ...Object.keys(b as object)]);
     for (const k of keys) {
-      diff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], path ? `${path}.${k}` : k, mismatches, rescued);
+      diff(
+        (a as Record<string, unknown>)[k],
+        (b as Record<string, unknown>)[k],
+        path ? `${path}.${k}` : k,
+        mismatches,
+        rescued,
+        excluded,
+      );
     }
     return;
   }
@@ -71,22 +101,29 @@ function diff(a: unknown, b: unknown, path: string, mismatches: Mismatch[], resc
   mismatches.push({ path, a, b });
 }
 
-function compareFile(name: string, refDir: string, outDir: string): { pass: boolean; rescued: number; mismatches: Mismatch[] } {
+function compareFile(
+  name: string,
+  refDir: string,
+  outDir: string,
+): { pass: boolean; rescued: number; excluded: number; mismatches: Mismatch[] } {
   const refRaw = readFileSync(join(refDir, name), "utf8");
   const outRaw = readFileSync(join(outDir, name), "utf8");
   const refParsed = JSON.parse(refRaw);
   const outParsed = JSON.parse(outRaw);
 
-  // 手順1: パース後の正規化バイト一致。
+  // 手順1: パース後の正規化バイト一致。新規フィールド(elevatorM/restroomM)を
+  // 持つ出力は ref(Go 出力、キー自体が無い)と絶対に一致しないので、catalog.json は
+  // 常に手順2(構造 diff)に落ちる。それ自体は想定どおりで FAIL ではない。
   if (JSON.stringify(refParsed) === JSON.stringify(outParsed)) {
-    return { pass: true, rescued: 0, mismatches: [] };
+    return { pass: true, rescued: 0, excluded: 0, mismatches: [] };
   }
 
   // 手順2: 構造 diff にフォールバック。
   const mismatches: Mismatch[] = [];
   const rescued = { count: 0 };
-  diff(refParsed, outParsed, "", mismatches, rescued);
-  return { pass: mismatches.length === 0, rescued: rescued.count, mismatches };
+  const excluded = { count: 0 };
+  diff(refParsed, outParsed, "", mismatches, rescued, excluded);
+  return { pass: mismatches.length === 0, rescued: rescued.count, excluded: excluded.count, mismatches };
 }
 
 function main() {
@@ -103,12 +140,17 @@ function main() {
 
   let allPass = true;
   let totalRescued = 0;
+  let totalExcluded = 0;
   for (const name of ["graph.json", "catalog.json"]) {
     const result = compareFile(name, refDir, outDir);
     totalRescued += result.rescued;
+    totalExcluded += result.excluded;
     if (result.pass) {
-      const note = result.rescued > 0 ? `(x/y許容で救った件数: ${result.rescued})` : "(バイト一致)";
-      console.log(`[compare PASS] ${name} ${note}`);
+      const notes = [
+        result.rescued > 0 ? `x/y許容で救った件数: ${result.rescued}` : null,
+        result.excluded > 0 ? `比較除外: ${result.excluded}件(${EXCLUDED_FIELD_NAMES.join(", ")})` : null,
+      ].filter((n): n is string => n !== null);
+      console.log(`[compare PASS] ${name}${notes.length > 0 ? ` (${notes.join(" / ")})` : "(バイト一致)"}`);
     } else {
       allPass = false;
       console.log(`[compare FAIL] ${name} 不一致 ${result.mismatches.length} 件(先頭20件):`);
@@ -119,6 +161,12 @@ function main() {
   }
 
   console.log(`\nx/y 許容で救った件数(合計): ${totalRescued}`);
+  if (totalExcluded > 0) {
+    console.log(
+      `比較から除外したフィールド(合計 ${totalExcluded} 箇所): ${EXCLUDED_FIELD_NAMES.join(", ")}` +
+        `(Go 版に無い新規フィールドのため。理由は本ファイル冒頭のコメント)`,
+    );
+  }
   if (!allPass) {
     console.error("\n等価性ゲート: FAIL");
     process.exit(1);

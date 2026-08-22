@@ -11,6 +11,11 @@ export type LineRef = { kind: "line"; id: string };
 export type CatalogRef = { kind: "catalog"; id: string };
 export type NodeRef = { kind: "node"; id: string };
 
+/** Places で選んだ目的地。名前と座標だけを受け取る。どこで検索したかは知らない。 */
+export type PlaceRef = { kind: "place"; nameJa: string; lat: number; lng: number };
+
+export type DestinationRef = CatalogRef | PlaceRef;
+
 export type EntryRef = LineRef | CatalogRef | NodeRef;
 
 export type ParticipantInput = {
@@ -21,7 +26,7 @@ export type ParticipantInput = {
 
 export type RecommendationRequest = {
   datasetId: DatasetId;
-  destination: CatalogRef;
+  destination: DestinationRef;
   participants: ParticipantInput[];
   constraints?: {
     accessibility?: Accessibility;
@@ -52,6 +57,26 @@ const EntryRefSchema = v.union(
   "到着情報が読めません",
 );
 
+// destination だけの CatalogRef。上の CatalogRefSchema と同じ形だが、
+// エラーメッセージを「目的地」向けに変えるため独立させてある。
+const DestinationCatalogRefSchema = v.object({
+  kind: v.literal("catalog", "行き先が読めません"),
+  id: v.pipe(v.string("行き先が読めません"), v.minLength(1, "行き先が読めません")),
+});
+const PlaceRefSchema = v.object({
+  kind: v.literal("place", "行き先が読めません"),
+  nameJa: v.pipe(v.string("行き先が読めません"), v.minLength(1, "行き先が読めません")),
+  lat: v.pipe(v.number("行き先の位置が読めません"), v.finite("行き先の位置が読めません")),
+  lng: v.pipe(v.number("行き先の位置が読めません"), v.finite("行き先の位置が読めません")),
+});
+// kind で分ける discriminated union。Places 由来(PlaceRef)かプリセット
+// (CatalogRef)かで契約は同じ計算を通る(docs/RECOMMENDER.md「出口から先は Maps に渡す」)。
+const DestinationRefSchema = v.variant(
+  "kind",
+  [DestinationCatalogRefSchema, PlaceRefSchema],
+  "行き先が読めません",
+);
+
 const ParticipantInputSchema = v.object({
   id: v.pipe(v.string("参加者のIDが読めません"), v.minLength(1, "参加者のIDが読めません")),
   entry: EntryRefSchema,
@@ -63,7 +88,7 @@ export const RecommendationRequestSchema = v.object({
   // 判定（409 dataset_mismatch）は recommend() に任せる。ここで literal にすると
   // 値違いが 400 に化けて、docs の 409 契約が届かなくなる。
   datasetId: v.pipe(v.string("データセットが読めません"), v.minLength(1, "データセットが読めません")),
-  destination: CatalogRefSchema,
+  destination: DestinationRefSchema,
   participants: v.pipe(
     v.array(ParticipantInputSchema, "参加者が読めません"),
     v.minLength(2, "参加者は2人以上必要です"),
@@ -73,6 +98,23 @@ export const RecommendationRequestSchema = v.object({
       accessibility: v.optional(v.picklist(["any", "step_free"], "移動条件が読めません")),
       asOf: v.optional(v.pipe(v.string("時刻が読めません"), v.isoTimestamp("時刻が読めません"))),
     }),
+  ),
+});
+
+// POST /v1/exit-reports の入力を Valibot で検証する。catalogId がカタログの
+// 出口に無いかどうかは、ここではなく index.ts 側(dataset を持つ)で見る。
+const MAX_EXIT_REPORT_LABEL_LENGTH = 40;
+
+export const ExitReportRequestSchema = v.object({
+  catalogId: v.pipe(v.string("出口が読めません"), v.minLength(1, "出口が読めません")),
+  labelJa: v.pipe(
+    v.string("現地の表示を入れてください"),
+    v.trim(),
+    v.minLength(1, "現地の表示を入れてください"),
+    v.maxLength(
+      MAX_EXIT_REPORT_LABEL_LENGTH,
+      `現地の表示は${MAX_EXIT_REPORT_LABEL_LENGTH}文字までです`,
+    ),
   ),
 });
 
@@ -93,6 +135,15 @@ export type CatalogResponse = {
   lines: CatalogLine[];
   destinations: CatalogDestination[];
 };
+
+/** POST /v1/exit-reports。出口の看板が応答と違ったときに現地の表示を送る口。 */
+export type ExitReportRequest = {
+  catalogId: string;
+  /** 現地の看板に書いてある文字。空は受けない。 */
+  labelJa: string;
+};
+
+export type ExitReportResponse = { ok: true };
 
 export type ReasonCode =
   | "feasible"
@@ -149,6 +200,14 @@ export type MeetingCandidate = {
     nameJa: string;
     floorLabel: string;
     evidence: "hypothesis" | "field_confirmed";
+    facilities: {
+      /** 集合場所から歩いて 50m 以内にエレベーターがある。 */
+      elevator: boolean;
+      /** 同じくトイレ(多機能・オストメイトを含む)。 */
+      restroom: boolean;
+      /** 全員がこの候補まで段差なしで行ける。経路で決まるので取り込みでは決めない。 */
+      stepFree: boolean;
+    };
   };
   scores: {
     maxDistanceM: number;

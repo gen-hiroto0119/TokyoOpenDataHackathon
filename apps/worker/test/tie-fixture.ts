@@ -69,6 +69,8 @@ const catalog: Catalog = {
       nameJa: "集合場所",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: null,
+      restroomM: null,
     },
     {
       catalogId: "meet.isolated",
@@ -76,6 +78,8 @@ const catalog: Catalog = {
       nameJa: "孤立広場",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: null,
+      restroomM: null,
     },
     {
       catalogId: "meet.onlyexit",
@@ -83,6 +87,8 @@ const catalog: Catalog = {
       nameJa: "出口への辺が無い広場",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: null,
+      restroomM: null,
     },
   ],
   exits: [

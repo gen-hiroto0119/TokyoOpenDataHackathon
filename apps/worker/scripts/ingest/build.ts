@@ -116,6 +116,10 @@ export type MeetingEntry = {
   evidence: "hypothesis";
   lat: number;
   lng: number;
+  /** 歩いてエレベーターまで何m。届かなければ null。docs/RECOMMENDER.md「近くの設備は取り込みで測る」。 */
+  elevatorM: number | null;
+  /** 同じくトイレ(多機能・オストメイトを含む)まで何m。 */
+  restroomM: number | null;
 };
 
 export type ExitEntry = {
@@ -193,6 +197,111 @@ export type BuildResult = {
 };
 
 const VERTICAL_FACILITIES = new Set(["stairs", "escalator", "elevator"]);
+
+// ---------------------------------------------------------------- 集合候補の近くの設備
+//
+// Go 版(tools/ingest/main.go)には無い新規機能(移植ではない)。docs/RECOMMENDER.md
+// 「近くの設備は取り込みで測る」節のとおり、出口探索(src/recommend.ts の
+// shortestFrom/逆向き隣接)と同じ手口を、エレベーター/トイレの近さにも使う。
+// 直線距離は使わない(階をまたぐ設備を近いと誤る)。
+
+/** 逆向きの隣接リスト。各リンクの to -> from。距離は from -> to のまま(向きだけ反転)。 */
+function buildReverseAdjacency(links: GraphLink[]): Map<string, { to: string; distanceM: number }[]> {
+  const adjacency = new Map<string, { to: string; distanceM: number }[]>();
+  for (const link of links) {
+    const list = adjacency.get(link.to);
+    if (list) list.push({ to: link.from, distanceM: link.distanceM });
+    else adjacency.set(link.to, [{ to: link.from, distanceM: link.distanceM }]);
+  }
+  return adjacency;
+}
+
+/** (距離, nodeId) の順に取り出す最小ヒープ。src/recommend.ts の Heap と同じ形。 */
+class DistHeap {
+  private readonly items: { id: string; d: number }[] = [];
+
+  private less(a: { id: string; d: number }, b: { id: string; d: number }): boolean {
+    if (a.d !== b.d) return a.d < b.d;
+    return a.id < b.id;
+  }
+
+  push(item: { id: string; d: number }): void {
+    this.items.push(item);
+    let i = this.items.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!this.less(this.items[i]!, this.items[parent]!)) break;
+      [this.items[i], this.items[parent]] = [this.items[parent]!, this.items[i]!];
+      i = parent;
+    }
+  }
+
+  pop(): { id: string; d: number } | undefined {
+    const top = this.items[0];
+    if (top === undefined) return undefined;
+    const last = this.items.pop()!;
+    if (this.items.length > 0) {
+      this.items[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1;
+        const r = l + 1;
+        let small = i;
+        if (l < this.items.length && this.less(this.items[l]!, this.items[small]!)) small = l;
+        if (r < this.items.length && this.less(this.items[r]!, this.items[small]!)) small = r;
+        if (small === i) break;
+        [this.items[i], this.items[small]] = [this.items[small]!, this.items[i]!];
+        i = small;
+      }
+    }
+    return top;
+  }
+
+  get size(): number {
+    return this.items.length;
+  }
+}
+
+/** 距離の同点判定。浮動小数の誤差だけを吸収する幅。src/recommend.ts の EPS と同じ値。 */
+const DIST_EPS = 1e-9;
+
+/**
+ * 多点始点の最短距離(値だけ。経路の復元は要らない)。同点の取り出し順は
+ * (距離, nodeId) で決まり、始点集合も辞書順に固定するので、二回実行しても
+ * 同じ処理順になる(決定性)。届かないノードは戻り値の Map に現れない。
+ */
+function multiSourceDistances(
+  starts: Iterable<string>,
+  adjacency: Map<string, { to: string; distanceM: number }[]>,
+): Map<string, number> {
+  const best = new Map<string, number>();
+  const queue = new DistHeap();
+  for (const s of [...new Set(starts)].sort()) {
+    best.set(s, 0);
+    queue.push({ id: s, d: 0 });
+  }
+  const done = new Set<string>();
+  while (queue.size > 0) {
+    const head = queue.pop();
+    if (!head) break;
+    if (done.has(head.id)) continue;
+    done.add(head.id);
+    const d = best.get(head.id);
+    if (d === undefined) continue;
+    for (const edge of adjacency.get(head.id) ?? []) {
+      if (done.has(edge.to)) continue;
+      const next = d + edge.distanceM;
+      const known = best.get(edge.to);
+      if (known !== undefined && next >= known - DIST_EPS) continue;
+      best.set(edge.to, next);
+      queue.push({ id: edge.to, d: next });
+    }
+  }
+  return best;
+}
+
+/** トイレ扱いにする facility 値。多機能・オストメイトを含む。 */
+const RESTROOM_FACILITIES = new Set(["bathroom", "universalaccesstoilet", "ostomate"]);
 
 export function build(input: BuildInput): BuildResult {
   const { nav, comMap, featureCollections, comEntity, manualLabels, version, hash } = input;
@@ -371,6 +480,24 @@ export function build(input: BuildInput): BuildResult {
     }
   }
 
+  // 集合候補ごとの、歩いてエレベーター/トイレまで何m(docs/RECOMMENDER.md「近くの
+  // 設備は取り込みで測る」)。逆向きの隣接で、全設備ノードを始点にした多点始点
+  // 最短を1回ずつ回す(出口と同じ手口。集合候補→設備の向きを正しく出す)。
+  const elevatorNodeIds = new Set<string>();
+  const restroomNodeIds = new Set<string>();
+  for (const [gid, f] of geoms) {
+    const ids = gidNodes.get(gid);
+    if (!ids || ids.length === 0) continue;
+    if (f.properties.facility === "elevator") {
+      for (const id of ids) elevatorNodeIds.add(String(id));
+    } else if (RESTROOM_FACILITIES.has(f.properties.facility)) {
+      for (const id of ids) restroomNodeIds.add(String(id));
+    }
+  }
+  const reverseAdjacency = buildReverseAdjacency(links);
+  const elevatorDist = multiSourceDistances(elevatorNodeIds, reverseAdjacency);
+  const restroomDist = multiSourceDistances(restroomNodeIds, reverseAdjacency);
+
   // R13-R17: 改札 entries。
   const entries: EntryEntry[] = [];
   const seenEntry = new Set<string>();
@@ -439,6 +566,8 @@ export function build(input: BuildInput): BuildResult {
       evidence: "hypothesis",
       lat: ll[0],
       lng: ll[1],
+      elevatorM: elevatorDist.get(nodeId) ?? null,
+      restroomM: restroomDist.get(nodeId) ?? null,
     });
   }
   meetings.sort((a, b) => (a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0));

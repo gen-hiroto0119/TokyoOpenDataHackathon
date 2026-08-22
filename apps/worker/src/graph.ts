@@ -47,6 +47,10 @@ export type MeetingCatalogEntry = {
   nameJa: string;
   explainability: number;
   evidence: "hypothesis" | "field_confirmed";
+  /** 歩いてエレベーターまで何m。届かなければ null。docs/RECOMMENDER.md「近くの設備は取り込みで測る」。 */
+  elevatorM: number | null;
+  /** 同じくトイレ(多機能・オストメイトを含む)まで何m。 */
+  restroomM: number | null;
 };
 
 export type ExitCatalogEntry = {

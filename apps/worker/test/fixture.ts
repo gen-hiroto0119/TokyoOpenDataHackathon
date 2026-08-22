@@ -123,6 +123,10 @@ const catalog: Catalog = {
       nameJa: "西口交番前",
       explainability: 3,
       evidence: "hypothesis",
+      // 50m ちょうど(しきい値の境界)。elevator: true。
+      elevatorM: 50,
+      // しきい値を超える。restroom: false。
+      restroomM: 50.1,
     },
     {
       catalogId: "meet.board",
@@ -130,6 +134,9 @@ const catalog: Catalog = {
       nameJa: "B1 案内板前",
       explainability: 2,
       evidence: "hypothesis",
+      // 届かない(null)。elevator: false。
+      elevatorM: null,
+      restroomM: 10,
     },
     {
       catalogId: "meet.south",
@@ -137,6 +144,9 @@ const catalog: Catalog = {
       nameJa: "南通路広場",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: 80,
+      // 0m(境界)。restroom: true。
+      restroomM: 0,
     },
   ],
   exits: [

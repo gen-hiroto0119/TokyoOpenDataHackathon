@@ -50,6 +50,8 @@ const catalog: Catalog = {
       nameJa: "集合場所",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: null,
+      restroomM: null,
     },
   ],
   exits: [

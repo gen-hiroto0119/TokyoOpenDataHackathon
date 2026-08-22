@@ -546,6 +546,13 @@ const SURFACE_DETOUR = 1.35;
  */
 const UNLABELLED_PENALTY_M = 60;
 
+/**
+ * 集合場所から歩いて何 m 以内ならエレベーター/トイレが「近い」とみなすか。
+ * docs/RECOMMENDER.md「近くの設備は取り込みで測る」節。設備は順位に一切使わない
+ * ので、この定数は `facilities` の真偽判定にだけ効く(scores には入らない)。
+ */
+const NEARBY_FACILITY_THRESHOLD_M = 50;
+
 /** 直線距離。地上ぶんの見積もりにだけ使う。経路の長さには使わない。 */
 function haversineM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6371000;
@@ -601,11 +608,21 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
   // steps は次数で区切らなくなった（docs/RECOMMENDER.md「steps は経路を…」）。
   const branchDegree = branchDegrees(graph);
 
-  const destination = catalog.destinations.find((d) => d.catalogId === request.destination.id);
-  if (!destination) {
-    throw new RecommendError("unknown_catalog", "目的地が見つかりません", {
-      catalogId: request.destination.id,
-    });
+  // 目的地は CatalogRef(プリセット)か PlaceRef(Places で選んだ名前と座標)の
+  // どちらでもよく、計算は同じ(docs/RECOMMENDER.md「出口から先は Maps に渡す」)。
+  // 使うのは nameJa(Maps の destination)と lat/lng(出口の持ち出しコスト)だけ。
+  let destination: { nameJa: string; lat: number; lng: number };
+  const destinationRef = request.destination;
+  if (destinationRef.kind === "catalog") {
+    const found = catalog.destinations.find((d) => d.catalogId === destinationRef.id);
+    if (!found) {
+      throw new RecommendError("unknown_catalog", "目的地が見つかりません", {
+        catalogId: destinationRef.id,
+      });
+    }
+    destination = found;
+  } else {
+    destination = destinationRef;
   }
 
   if (catalog.exits.length === 0) {
@@ -715,6 +732,20 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
   const relaxedFromExits = needsCauseCheck
     ? shortestFrom(catalog.exits.map((e) => e.nodeId), reverseAdjacency, links, relaxed, surfaceCost)
     : null;
+
+  // meeting.facilities.stepFree の事前計算。`accessibility: "step_free"` の
+  // リクエストでは ranked に載る候補は定義上すべて true なので不要。`"any"` の
+  // ときだけ、段差なし制約での到達可能性を参加者ごとに 1 回ずつ求める
+  // （F4 で入れた緩和探索の事前計算と同じ形。候補ごとに探索を回さない）。
+  const stepFreePass: Passability = { accessibility: "step_free", asOf };
+  const stepFreeReachedByParticipant =
+    accessibility === "step_free"
+      ? null
+      : new Map(
+          request.participants.map(
+            (p) => [p.id, shortestFrom(starts.get(p.id)!, adjacency, links, stepFreePass)] as const,
+          ),
+        );
 
   type Scored = {
     meeting: (typeof catalog.meetings)[number];
@@ -864,6 +895,13 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
     // 逆探索の復元は出口始まりなので、もう一度反転して集合場所→出口にする。
     onwardPath.nodeIds.reverse();
     onwardPath.linkIds.reverse();
+    // 設備は順位に一切使わない（docs 明記）。scores には入れず、meeting の下にだけ置く。
+    const stepFree =
+      accessibility === "step_free"
+        ? true
+        : request.participants.every((p) =>
+            stepFreeReachedByParticipant!.get(p.id)!.has(s.meeting.nodeId),
+          );
     return {
       rank: i + 1,
       meeting: {
@@ -872,6 +910,11 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
         nameJa: s.meeting.nameJa,
         floorLabel: node.floorLabel ?? "",
         evidence: s.meeting.evidence,
+        facilities: {
+          elevator: s.meeting.elevatorM !== null && s.meeting.elevatorM <= NEARBY_FACILITY_THRESHOLD_M,
+          restroom: s.meeting.restroomM !== null && s.meeting.restroomM <= NEARBY_FACILITY_THRESHOLD_M,
+          stepFree,
+        },
       },
       scores: {
         maxDistanceM: s.maxDistanceM,

@@ -102,11 +102,13 @@ describe("limitRanked", () => {
 });
 
 describe("buildRoomRecommendations", () => {
-  it("目的地がプリセットで無いと preset_destination_required", () => {
-    const room = makeRoom({ destination: { catalogId: null, nameJa: "適当な場所", lat: 1, lng: 2 } });
-    expect(() => buildRoomRecommendations(fixture, room, 10)).toThrowError(
-      expect.objectContaining({ code: "preset_destination_required" }),
-    );
+  it("目的地が Places 由来（catalogId が null）でも 200 で返る（旧 preset_destination_required の回帰）", () => {
+    const room = makeRoom({
+      destination: { catalogId: null, nameJa: "適当な場所", lat: 35.6896, lng: 139.6985 },
+    });
+    const res = buildRoomRecommendations(fixture, room, 10);
+    expect(res.ranked.length).toBeGreaterThan(0);
+    expect(res.ranked[0]!.onward.exit.mapsDirUrl).toContain(encodeURIComponent("適当な場所"));
   });
 
   it("到着情報が2人未満だと not_enough_participants", () => {

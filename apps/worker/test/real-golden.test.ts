@@ -291,3 +291,35 @@ describe("G13: confirmations の branch 件数も実分岐で決める", () => {
     expect(branchCounts).toEqual({ jr: 3, keio: 12, marunouchi: 21 });
   });
 });
+
+describe("G14: 1位の facilities をゴールデンに固定する", () => {
+  it("代表ケースの1位（meet.28993812）の facilities", () => {
+    const res = recommend(dataset, representative);
+    const top = res.ranked[0]!;
+    expect(top.meeting.catalogId).toBe("meet.28993812");
+    // elevatorM=46.79m(50m以内→true) restroomM=140.06m(50m超→false)。
+    // 段差なし制約が無くても、この候補への経路には階段/エスカレーター/unknown
+    // が無いので stepFree は true(実測)。
+    expect(top.meeting.facilities).toEqual({ elevator: true, restroom: false, stepFree: true });
+  });
+
+  it("設備は順位を変えない: 上位3件の並びは G1 のゴールデンと同じ", () => {
+    // facilities を足す前後で ranked の並びが変わっていないことの回帰。
+    // 壊れたらここが真っ先に落ちる(設備は scores に入れていないので、
+    // 変わるとすれば実装ミスでしかない)。
+    const res = recommend(dataset, representative);
+    expect(res.ranked.slice(0, 3).map((r) => r.meeting.catalogId)).toEqual([
+      "meet.28993812",
+      "meet.28993811",
+      "meet.28993854",
+    ]);
+  });
+});
+
+describe("G15: accessibility: step_free では ranked 全件の stepFree が true", () => {
+  it("G5 の 136 件すべてで facilities.stepFree === true", () => {
+    const res = recommend(dataset, { ...representative, constraints: { accessibility: "step_free" } });
+    expect(res.ranked.length).toBe(136);
+    expect(res.ranked.every((r) => r.meeting.facilities.stepFree)).toBe(true);
+  });
+});

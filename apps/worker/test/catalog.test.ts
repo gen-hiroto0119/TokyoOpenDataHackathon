@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import catalogJson from "../data/catalog.json" with { type: "json" };
+import type { Catalog } from "../src/graph.js";
 import app from "../src/index.js";
 
 describe("GET /health", () => {
@@ -19,7 +21,16 @@ describe("GET /v1/catalog", () => {
       lines: { id: string; nameJa: string }[];
       destinations: { catalogId: string; nameJa: string; lat: number; lng: number }[];
     };
-    expect(body.lines.map((l) => l.id)).toEqual(["line.jr", "line.keio", "line.marunouchi"]);
+    // 3路線(代表ケース)から5路線へ意図的に更新。docs/RECOMMENDER.md
+    // 「載っていない路線があると、その人は参加できない」を受け、改札を持つ
+    // 路線をすべて出すことにしたため(実データでは JR・京王・大江戸・小田急・丸ノ内)。
+    expect(body.lines.map((l) => l.id)).toEqual([
+      "line.jr",
+      "line.keio",
+      "line.oedo",
+      "line.odakyu",
+      "line.marunouchi",
+    ]);
     expect(body.destinations.some((d) => d.catalogId === "dest.tokyo-metropolitan-government")).toBe(
       true,
     );
@@ -28,6 +39,23 @@ describe("GET /v1/catalog", () => {
     expect(body).not.toHaveProperty("exits");
     expect(body).not.toHaveProperty("nodes");
     expect(body).not.toHaveProperty("links");
+  });
+
+  it("ドリフト検知: 改札を持つ路線は実データの entries[].lineIds を全部拾えている(取り込み直しで路線が増えても静かに消えない)", async () => {
+    const catalog = catalogJson as Catalog;
+    const lineIdsWithGates = new Set<string>();
+    for (const entry of catalog.entries) {
+      for (const lineId of entry.lineIds) lineIdsWithGates.add(lineId);
+    }
+    expect(lineIdsWithGates.size).toBeGreaterThan(0);
+
+    const res = await app.request("/v1/catalog");
+    const body = (await res.json()) as { lines: { id: string; nameJa: string }[] };
+    const knownIds = new Set(body.lines.map((l) => l.id));
+
+    for (const lineId of lineIdsWithGates) {
+      expect(knownIds.has(lineId)).toBe(true);
+    }
   });
 });
 
@@ -109,5 +137,56 @@ describe("POST /v1/recommendations（F2: valibot による検証）", () => {
     expect(res.status).toBe(409);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("dataset_mismatch");
+  });
+});
+
+describe("POST /v1/exit-reports", () => {
+  const post = (body: unknown) =>
+    app.request("/v1/exit-reports", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("正しい入力は 202 を返し、ログに 1 行出すだけで保存しない", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const res = await post({ catalogId: "exit.28994897", labelJa: "地下1出口" });
+      expect(res.status).toBe(202);
+      const body = (await res.json()) as { ok: boolean };
+      expect(body.ok).toBe(true);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      const logged = JSON.parse(spy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+      expect(logged).toEqual({
+        type: "exit_report",
+        catalogId: "exit.28994897",
+        labelJa: "地下1出口",
+        was: "", // exit.28994897 の現在の label(取り込み時点)
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("知らない catalogId は 400 unknown_catalog", async () => {
+    const res = await post({ catalogId: "exit.no-such-exit", labelJa: "17番出口" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("unknown_catalog");
+  });
+
+  it("空の labelJa は 400 invalid_request", async () => {
+    const res = await post({ catalogId: "exit.28994929", labelJa: "" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("invalid_request");
+  });
+
+  it("catalogId が欠けていると 400 invalid_request", async () => {
+    const res = await post({ labelJa: "17番出口" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("invalid_request");
   });
 });

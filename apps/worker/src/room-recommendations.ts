@@ -4,7 +4,7 @@
 // 関数・クラス以外の named export（DEFAULT_ROOM_RECOMMENDATIONS_LIMIT のような値）を
 // エントリポイント候補として拒否し、起動できなくなる。
 
-import type { RecommendationResponse } from "./contract.js";
+import type { DestinationRef, RecommendationResponse } from "./contract.js";
 import type { Dataset } from "./graph.js";
 import { recommend } from "./recommend.js";
 import { RoomError, type Room } from "./room.js";
@@ -44,10 +44,6 @@ export function limitRanked(
  * HTTP を経由せずテストできるようにする。
  */
 export function buildRoomRecommendations(ds: Dataset, room: Room, limit: number): RecommendationResponse {
-  if (room.destination.catalogId === null) {
-    throw new RoomError("preset_destination_required", "目的地がプリセットではありません");
-  }
-
   const ready = room.participants.filter((p) => p.entry !== null);
   if (ready.length < 2) {
     throw new RoomError("not_enough_participants", "到着情報がそろっていません", {
@@ -55,9 +51,21 @@ export function buildRoomRecommendations(ds: Dataset, room: Room, limit: number)
     });
   }
 
+  // 目的地は Places で選んだものでもよい。catalogId が null なら PlaceRef として
+  // そのまま渡す（docs/ROOM.md「目的地は Places で選んだものでもよい」）。
+  const destination: DestinationRef =
+    room.destination.catalogId !== null
+      ? { kind: "catalog", id: room.destination.catalogId }
+      : {
+          kind: "place",
+          nameJa: room.destination.nameJa,
+          lat: room.destination.lat,
+          lng: room.destination.lng,
+        };
+
   const res = recommend(ds, {
     datasetId: room.datasetId,
-    destination: { kind: "catalog", id: room.destination.catalogId },
+    destination,
     participants: ready.map((p) => ({
       id: p.id,
       entry: p.entry!,

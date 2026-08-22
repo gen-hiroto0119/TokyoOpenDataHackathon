@@ -384,3 +384,63 @@ describe("infeasible の原因判定（F4）", () => {
     });
   });
 });
+
+describe("Places の目的地", () => {
+  it("place destination で通り、mapsDirUrl の destination がその名前になる", () => {
+    const res = recommend(fixture, {
+      ...representative,
+      destination: { kind: "place", nameJa: "適当な場所", lat: 35.6896, lng: 139.6985 },
+    });
+    expect(res.ranked.length).toBeGreaterThan(0);
+    expect(res.ranked[0]!.onward.exit.mapsDirUrl).toContain(encodeURIComponent("適当な場所"));
+  });
+
+  it("同じ座標のプリセットと place で、出口と onward が一致する（座標だけが効いていることの証拠）", () => {
+    // dest.tokyo-metropolitan-government: lat 35.6896, lng 139.6917（fixture.ts）
+    const preset = recommend(fixture, representative);
+    const place = recommend(fixture, {
+      ...representative,
+      destination: { kind: "place", nameJa: "別の名前で呼んでも", lat: 35.6896, lng: 139.6917 },
+    });
+    expect(place.ranked[0]!.meeting.nodeId).toBe(preset.ranked[0]!.meeting.nodeId);
+    expect(place.ranked[0]!.onward.exit.catalogId).toBe(preset.ranked[0]!.onward.exit.catalogId);
+    expect(place.ranked[0]!.onward.distanceM).toBe(preset.ranked[0]!.onward.distanceM);
+    expect(place.ranked[0]!.onward.pathNodeIds).toEqual(preset.ranked[0]!.onward.pathNodeIds);
+  });
+});
+
+describe("設備 facilities（順位には使わない）", () => {
+  it("50m 以内かどうかの真偽と、届かない(null)場合の false", () => {
+    const res = recommend(fixture, representative);
+    const byId = Object.fromEntries(res.ranked.map((r) => [r.meeting.nodeId, r.meeting.facilities]));
+    // m.koban: elevatorM=50(境界→true) restroomM=50.1(超える→false)
+    expect(byId["m.koban"]).toMatchObject({ elevator: true, restroom: false });
+    // m.board: elevatorM=null(届かない→false) restroomM=10(→true)
+    expect(byId["m.board"]).toMatchObject({ elevator: false, restroom: true });
+    // m.south: elevatorM=80(超える→false) restroomM=0(境界→true)
+    expect(byId["m.south"]).toMatchObject({ elevator: false, restroom: true });
+  });
+
+  it("設備は順位を変えない: 代表ケースの ranked 順はゴールデンのまま", () => {
+    const res = recommend(fixture, representative);
+    expect(res.ranked.map((r) => r.meeting.nodeId)).toEqual(["m.board", "m.south", "m.koban"]);
+  });
+
+  it("accessibility: step_free では ranked 全件の stepFree が true", () => {
+    const res = recommend(fixture, { ...representative, constraints: { accessibility: "step_free" } });
+    expect(res.ranked.length).toBeGreaterThan(0);
+    expect(res.ranked.every((r) => r.meeting.facilities.stepFree)).toBe(true);
+  });
+
+  it("accessibility: any では、階段しか経路が無い候補だけ stepFree が false", () => {
+    // branch→m.south は階段(vertical:'stairs')の1本だけ。m.board/m.koban への
+    // 経路には階段が無いので、any でも stepFree のまま true。
+    const res = recommend(fixture, representative);
+    const byId = Object.fromEntries(
+      res.ranked.map((r) => [r.meeting.nodeId, r.meeting.facilities.stepFree]),
+    );
+    expect(byId["m.south"]).toBe(false);
+    expect(byId["m.board"]).toBe(true);
+    expect(byId["m.koban"]).toBe(true);
+  });
+});

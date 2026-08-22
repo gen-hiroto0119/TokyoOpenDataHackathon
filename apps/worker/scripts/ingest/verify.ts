@@ -360,6 +360,34 @@ export function verify(ctx: VerifyContext): VerifyResult {
     );
   }
 
+  // V18: 集合候補ごとの近くの設備(elevatorM/restroomM)。Go 版には無い新規機能
+  // (docs/RECOMMENDER.md「近くの設備は取り込みで測る」)。件数と値域を固定する。
+  // 期待値は実行して得た実測値をそのまま固定したもの(このタスクの受け入れ条件)。
+  {
+    const elevatorValues = catalog.meetings.map((m) => m.elevatorM);
+    const restroomValues = catalog.meetings.map((m) => m.restroomM);
+    const elevatorNonNull = elevatorValues.filter((v) => v !== null).length;
+    const restroomNonNull = restroomValues.filter((v) => v !== null).length;
+    const elevatorNull = elevatorValues.length - elevatorNonNull;
+    const restroomNull = restroomValues.length - restroomNonNull;
+    const negative = [...elevatorValues, ...restroomValues].filter((v) => v !== null && v < 0).length;
+    const ok =
+      catalog.meetings.length === 242 &&
+      elevatorNonNull === 242 &&
+      elevatorNull === 0 &&
+      restroomNonNull === 242 &&
+      restroomNull === 0 &&
+      negative === 0;
+    push(
+      "V18",
+      "設備距離(elevatorM/restroomM)の件数と値域",
+      ok,
+      `elevator: 値あり=${elevatorNonNull}(期待242) null=${elevatorNull}(期待0) / ` +
+        `restroom: 値あり=${restroomNonNull}(期待242) null=${restroomNull}(期待0) / ` +
+        `負値=${negative}件(期待0)`,
+    );
+  }
+
   const allPass = checks.every((c) => c.skipped || c.pass);
   return { checks, allPass };
 }

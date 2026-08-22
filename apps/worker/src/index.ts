@@ -2,8 +2,13 @@ import { vValidator } from "@hono/valibot-validator";
 import { Hono } from "hono";
 import catalogJson from "../data/catalog.json" with { type: "json" };
 import graphJson from "../data/graph.json" with { type: "json" };
-import type { CatalogResponse, RecommendationRequest, RecommendationResponse } from "./contract.js";
-import { RecommendationRequestSchema } from "./contract.js";
+import type {
+  CatalogResponse,
+  ExitReportResponse,
+  RecommendationRequest,
+  RecommendationResponse,
+} from "./contract.js";
+import { ExitReportRequestSchema, RecommendationRequestSchema } from "./contract.js";
 import type { Catalog, Dataset, Graph } from "./graph.js";
 import { RecommendError, recommend } from "./recommend.js";
 import { buildRoomRecommendations, parseRoomRecommendationsLimit } from "./room-recommendations.js";
@@ -39,10 +44,17 @@ export function setDataset(next: Dataset): void {
   dataset = next;
 }
 
-/** 縦切りで出す路線。ingest の line id と同じ。 */
+/**
+ * 改札を持つ路線をすべて出す(docs/RECOMMENDER.md「載っていない路線があると、
+ * その人は参加できない」)。実データでは JR・京王・大江戸・小田急・丸ノ内の
+ * 5 つ(改札の多い順)。取り込み直しで 6 つ目が現れたら
+ * catalog.test.ts のドリフト検知テストで落ちる。
+ */
 const CATALOG_LINES: CatalogResponse["lines"] = [
   { id: "line.jr", nameJa: "JR" },
   { id: "line.keio", nameJa: "京王" },
+  { id: "line.oedo", nameJa: "大江戸" },
+  { id: "line.odakyu", nameJa: "小田急" },
   { id: "line.marunouchi", nameJa: "丸ノ内" },
 ];
 
@@ -154,6 +166,34 @@ app.post(
       }
       throw error;
     }
+  },
+);
+
+/**
+ * 出口の看板が応答と違ったときに、現地の表示を送る口(docs/RECOMMENDER.md)。
+ * 認証は要らない。受け取ったらログに出すだけで、保存しない — 取り込みの
+ * ラベルは人が確かめて data/labels/exits.json に戻すもので、送信をそのまま
+ * 正にしない(SCREENS.md「間違っていることを前提にする」)。
+ */
+app.post(
+  "/v1/exit-reports",
+  vValidator("json", ExitReportRequestSchema, (result, c) => {
+    if (!result.success) {
+      const first = result.issues[0];
+      return c.json(
+        { code: "invalid_request" as const, messageJa: first?.message ?? "リクエストが読めません" },
+        400,
+      );
+    }
+  }),
+  async (c) => {
+    const { catalogId, labelJa } = c.req.valid("json");
+    const exit = dataset.catalog.exits.find((e) => e.catalogId === catalogId);
+    if (!exit) {
+      return c.json({ code: "unknown_catalog" as const, messageJa: "出口が登録されていません" }, 400);
+    }
+    console.log(JSON.stringify({ type: "exit_report", catalogId, labelJa, was: exit.label }));
+    return c.json({ ok: true } satisfies ExitReportResponse, 202);
   },
 );
 

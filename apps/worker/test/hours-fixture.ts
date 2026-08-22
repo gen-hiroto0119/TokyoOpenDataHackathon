@@ -66,6 +66,8 @@ const catalog: Catalog = {
       nameJa: "昼だけ広場",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: null,
+      restroomM: null,
     },
     {
       catalogId: "meet.night",
@@ -73,6 +75,8 @@ const catalog: Catalog = {
       nameJa: "夜だけ広場",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: null,
+      restroomM: null,
     },
     {
       catalogId: "meet.free",
@@ -80,6 +84,8 @@ const catalog: Catalog = {
       nameJa: "いつでも広場",
       explainability: 1,
       evidence: "hypothesis",
+      elevatorM: null,
+      restroomM: null,
     },
   ],
   exits: [
