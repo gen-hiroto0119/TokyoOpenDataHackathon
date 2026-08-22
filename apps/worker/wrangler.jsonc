@@ -1,9 +1,18 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "eki-awase",
+  "account_id": "cf9e0849945f9b5a5cf123a5a7635bbc",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-17",
+  // graph.json / catalog.json は ES モジュールとしてバンドルする（data_blobs は使わない）
+  "tsconfig": "tsconfig.json",
   "observability": { "enabled": true },
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/v1/*", "/health"]
+  },
+  "dev": { "port": 8787 },
   "durable_objects": {
     "bindings": [{ "name": "ROOM", "class_name": "RoomObject" }]
   },

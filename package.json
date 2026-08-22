@@ -4,7 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter worker dev",
-    "deploy": "pnpm --filter worker deploy",
+    "dev:web": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "check": "pnpm -r typecheck && pnpm --filter worker test",
+    "deploy": "pnpm check && pnpm build && pnpm --filter worker run deploy",
     "test": "pnpm --filter worker test",
     "test:watch": "pnpm --filter worker test:watch",
     "typecheck": "pnpm -r typecheck",

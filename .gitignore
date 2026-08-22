@@ -10,9 +10,12 @@ storybook-static/
 .env.*
 !.env.example
 
-data/raw/
+/data/raw/
 *.zip
-data/graph/
+/data/graph/
 
 # Go の取り込みバイナリ。ソースからビルドする。
 tools/ingest/ingest
+
+# Claude Code の個人設定。共有するのは launch.json だけ。
+.claude/settings.local.json
