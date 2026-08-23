@@ -5,11 +5,9 @@ export type VerticalKind = "none" | "stairs" | "escalator" | "elevator" | "unkno
 
 export type GraphNode = {
   id: string;
-  levelIds: string[];
-  geomIds: string[];
   nameJa: string | null;
   floorLabel: string | null;
-  /** 平面座標。手順の方向を出すために使う。単位はメートル。 */
+  /** 原点（北緯 35.6900、東経 139.7000）からの平面座標(m)。x+ は東、y+ は北。手順の方向と地図に使う。 */
   x: number;
   y: number;
 };
@@ -19,9 +17,12 @@ export type GraphLink = {
   from: string;
   to: string;
   distanceM: number;
+  /** 階の差。屋外の地表(0)と屋内の 1 階(1)は同じ高さなので 0。 */
   deltaZ: number;
   vertical: VerticalKind;
   hours: { start: string; end: string } | null;
+  /** 折れ点を持つリンクだけ。両端を含む from → to の順。 */
+  shape?: [number, number][];
 };
 
 export type Graph = {

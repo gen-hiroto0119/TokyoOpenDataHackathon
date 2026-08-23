@@ -7,7 +7,7 @@ import type { Catalog, Dataset, Graph, GraphLink, GraphNode } from "../src/graph
  * - 出口 e.trap → 集合場所 だけ通れる（順方向で出口から探すとこれが使われる）
  */
 function node(id: string, x: number, y: number, nameJa: string | null, floorLabel: string): GraphNode {
-  return { id, levelIds: [floorLabel], geomIds: [], nameJa, floorLabel, x, y };
+  return { id, nameJa, floorLabel, x, y };
 }
 
 function link(id: string, from: string, to: string, distanceM: number): GraphLink {

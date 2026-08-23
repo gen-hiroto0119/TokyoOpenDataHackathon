@@ -5,12 +5,19 @@ import graphJson from "../data/graph.json" with { type: "json" };
 import type {
   CatalogResponse,
   ExitReportResponse,
+  LandmarksResponse,
   RecommendationRequest,
   RecommendationResponse,
 } from "./contract.js";
 import { ExitReportRequestSchema, RecommendationRequestSchema } from "./contract.js";
 import type { Catalog, Dataset, Graph } from "./graph.js";
-import { RecommendError, recommend } from "./recommend.js";
+import {
+  RecommendError,
+  nearbyLandmarks,
+  parseLandmarksLimit,
+  parseLandmarksRadiusM,
+  recommend,
+} from "./recommend.js";
 import { buildRoomRecommendations, parseRoomRecommendationsLimit } from "./room-recommendations.js";
 import {
   CreateRoomSchema,
@@ -46,16 +53,21 @@ export function setDataset(next: Dataset): void {
 
 /**
  * 改札を持つ路線をすべて出す(docs/RECOMMENDER.md「載っていない路線があると、
- * その人は参加できない」)。実データでは JR・京王・大江戸・小田急・丸ノ内の
- * 5 つ(改札の多い順)。取り込み直しで 6 つ目が現れたら
+ * その人は参加できない」)。実データでは JR・京王・丸ノ内・小田急・大江戸・
+ * 都営新宿・西武新宿の 7 つ。取り込み直しで 8 つ目が現れたら
  * catalog.test.ts のドリフト検知テストで落ちる。
+ * line.shinjuku / line.seibu は国交省データの取り込み(MLIT ingest)が
+ * まだ済んでおらず、apps/worker/data/catalog.json(旧・東京都データ)には
+ * この2路線の改札が無い。catalog.test.ts はそこだけ it.todo にしている。
  */
 const CATALOG_LINES: CatalogResponse["lines"] = [
   { id: "line.jr", nameJa: "JR" },
   { id: "line.keio", nameJa: "京王" },
-  { id: "line.oedo", nameJa: "大江戸" },
-  { id: "line.odakyu", nameJa: "小田急" },
   { id: "line.marunouchi", nameJa: "丸ノ内" },
+  { id: "line.odakyu", nameJa: "小田急" },
+  { id: "line.oedo", nameJa: "大江戸" },
+  { id: "line.shinjuku", nameJa: "都営新宿" },
+  { id: "line.seibu", nameJa: "西武新宿" },
 ];
 
 function publicCatalog(ds: Dataset): CatalogResponse {
@@ -196,6 +208,35 @@ app.post(
     return c.json({ ok: true } satisfies ExitReportResponse, 202);
   },
 );
+
+/**
+ * 近くの名前のある地点(改札・集合候補・出口)。画面7「いまいる場所」が使う
+ * (docs/RECOMMENDER.md「GET /v1/landmarks」)。`near` が無い/グラフに無ければ
+ * 400 unknown_node。`radiusM`/`limit` は不正値なら既定へ落とす
+ * (parseRoomRecommendationsLimit と同じ流儀)。
+ */
+app.get("/v1/landmarks", (c) => {
+  const near = c.req.query("near");
+  if (!near) {
+    return c.json({ code: "unknown_node" as const, messageJa: "起点が指定されていません" }, 400);
+  }
+  const radiusM = parseLandmarksRadiusM(c.req.query("radiusM"));
+  const limit = parseLandmarksLimit(c.req.query("limit"));
+  try {
+    const landmarks = nearbyLandmarks(dataset, near, radiusM, limit);
+    return c.json({ landmarks } satisfies LandmarksResponse);
+  } catch (error) {
+    if (error instanceof RecommendError) {
+      return c.json(
+        error.details
+          ? { code: error.code, messageJa: error.messageJa, details: error.details }
+          : { code: error.code, messageJa: error.messageJa },
+        recommendErrorStatus(error.code),
+      );
+    }
+    throw error;
+  }
+});
 
 // ---------------------------------------------------------------- ルーム
 

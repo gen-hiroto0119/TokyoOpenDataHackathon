@@ -13,7 +13,7 @@ import type { Catalog, Dataset, Graph, GraphLink, GraphNode } from "../src/graph
  * - 集合候補 3 つはそれぞれ出口 e.exit へつながる
  */
 function node(id: string, x: number, y: number, nameJa: string | null, floorLabel: string): GraphNode {
-  return { id, levelIds: [floorLabel], geomIds: [], nameJa, floorLabel, x, y };
+  return { id, nameJa, floorLabel, x, y };
 }
 
 function link(

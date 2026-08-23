@@ -61,6 +61,11 @@ export type RouteGuideProps = {
   onCorrectExit?: (labelJa: string) => void;
   onOpenHere?: () => void;
   onTabSelect?: (selected: TabBarSelected) => void;
+  /**
+   * 表示中の手順(スクロール位置)が変わるたびに、その行の nodeId を返す。
+   * 画面7「いまいる場所」が近くの地点を探す起点に使う(RoomPage が保持する)。
+   */
+  onCurrentNodeChange?: (nodeId: string) => void;
 };
 
 // 画面は 390×844 の固定枠(SCREENS.md)。可変幅を持たないので px 定数で足りる。
@@ -332,6 +337,7 @@ export function RouteGuide({
   onCorrectExit,
   onOpenHere,
   onTabSelect,
+  onCurrentNodeChange,
 }: RouteGuideProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
@@ -373,6 +379,15 @@ export function RouteGuide({
       setAnnouncement(announcementOf(row, current + 1, rows.length));
     }, 500);
     return () => clearTimeout(timer);
+  }, [current, rows]);
+
+  // 画面7「いまいる場所」が近くの地点を探す起点(RoomPage が保持する)。
+  useEffect(() => {
+    const row = rows[current];
+    if (row) onCurrentNodeChange?.(row.nodeId);
+    // onCurrentNodeChange は呼び出し側の setState をそのまま渡す想定で、
+    // 呼び出しごとに新しい関数になっても再実行の要否は current/rows だけで決める。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, rows]);
 
   function onScroll(event: UIEvent<HTMLDivElement>) {

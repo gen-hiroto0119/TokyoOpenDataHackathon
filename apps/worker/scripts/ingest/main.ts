@@ -1,42 +1,34 @@
-// tools/ingest/main.go の CLI 相当。R1-R33(build.ts)を実行し、書き出す前に
-// verify.ts(V1〜V17)にかけ、失敗したら書き出さずに終了する。
+// 取り込みの CLI。国交省の統合版と東京都の名前を読み、build.ts で結び、verify.ts に
+// かけてから apps/worker/data に書く。一つでも検査に落ちたら書かない。
 //
-// 実行: `node scripts/ingest/main.ts [--in ...] [--out ...] [--labels ...] [--version ...] [--hash ...]`
-// (Node v24 の型ストリップでゼロ依存実行。apps/worker から `pnpm ingest` でも可)
-//
-// 既定値は main.go の flag と同じ意味(data/raw/extracted 等)。ただし main.go は
-// リポジトリルートから実行される前提の相対パスなので、ここでは「明示指定が無い
-// 引数だけ」リポジトリルートを基準に解決する(pnpm --filter worker はカレント
-// ディレクトリを apps/worker にするため、素の相対パスのままだと解決先が変わってしまう)。
-// 明示指定された引数はふつうの CLI と同じく実行時の cwd を基準にする。
+// 実行: `pnpm --filter worker ingest` か `node scripts/ingest/main.ts`
+//   --mlit    国交省の展開先（既定 data/raw/mlit。統合版と施設別版のフォルダを置く）
+//   --tokyo   東京都の展開先（既定 data/raw/extracted）
+//   --labels  手書きの表の置き場（既定 data/labels。gates.json / tokyo-levels.json / exits.json）
+//   --out     書き出し先（既定 apps/worker/data）
+//   --version datasetVersion（既定 mlit-2020-08+tokyo-2023-02-20）
+// 明示しない引数はリポジトリルートを基準に解決する（pnpm --filter は cwd を apps/worker にするため）。
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build, mergeGeoms } from "./build.ts";
-import { readJSON, type ComEntity, type ComMap, type FeatureCollection, type ManualLabels, type NavFile } from "./raw.ts";
+import { build, type ExitLabelsFile, type GatesFile, type LevelsFile } from "./build.ts";
+import { loadMlit } from "./mlit.ts";
+import { loadTokyoNamedPoints } from "./tokyo.ts";
 import { verify } from "./verify.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-// apps/worker/scripts/ingest -> apps/worker/scripts -> apps/worker -> apps -> リポジトリルート
 const repoRoot = resolve(here, "../../../..");
 
-type Args = {
-  in: string;
-  out: string;
-  labels: string;
-  version: string;
-  hash: string;
-};
+export const DEFAULT_VERSION = "mlit-2020-08+tokyo-2023-02-20";
 
-function parseArgs(argv: string[]): Partial<Record<keyof Args, string>> {
-  const out: Partial<Record<keyof Args, string>> = {};
+type Args = { mlit: string; tokyo: string; labels: string; out: string; version: string };
+
+function parseArgs(argv: string[]): Partial<Args> {
+  const out: Partial<Args> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    // `pnpm run ingest -- --out X` は "--" をそのまま argv に残す(npm/pnpm の
-    // 素通し引数の区切り)。値を持たない裸の "--" は読み飛ばす。
-    if (a === "--") continue;
-    if (!a?.startsWith("--")) continue;
+    if (a === "--" || !a?.startsWith("--")) continue;
     const key = a.slice(2) as keyof Args;
     const value = argv[i + 1];
     if (value === undefined) throw new Error(`--${key} には値が必要`);
@@ -51,63 +43,47 @@ function resolveArg(explicit: string | undefined, defaultRelativeToRepoRoot: str
   return resolve(repoRoot, defaultRelativeToRepoRoot);
 }
 
+function readJSON<T>(path: string): T {
+  return JSON.parse(readFileSync(path, "utf8")) as T;
+}
+
 function main() {
   const parsed = parseArgs(process.argv.slice(2));
   const args: Args = {
-    in: resolveArg(parsed.in, "data/raw/extracted"),
+    mlit: resolveArg(parsed.mlit, "data/raw/mlit"),
+    tokyo: resolveArg(parsed.tokyo, "data/raw/extracted"),
+    labels: resolveArg(parsed.labels, "data/labels"),
     out: resolveArg(parsed.out, "apps/worker/data"),
-    labels: resolveArg(parsed.labels, "data/labels/exits.json"),
-    version: parsed.version ?? "2023-02-20",
-    hash: parsed.hash ?? "",
+    version: parsed.version ?? DEFAULT_VERSION,
   };
 
-  const nav = readJSON<NavFile>(join(args.in, "v5_nav.json"));
-  const comMap = readJSON<ComMap>(join(args.in, "com-map.geojson"));
+  const mlit = loadMlit(args.mlit);
+  const tokyo = loadTokyoNamedPoints(args.tokyo);
+  const gates = readJSON<GatesFile>(join(args.labels, "gates.json"));
+  const levels = readJSON<LevelsFile>(join(args.labels, "tokyo-levels.json"));
+  const exitLabels = readJSON<ExitLabelsFile>(join(args.labels, "exits.json"));
 
-  // geojson-level-geom-*.geojson を辞書順(ファイル名の昇順)で glob する。
-  // Go の filepath.Glob は結果を辞書順で返すので、ここでも明示的にソートする(R2)。
-  const geomFiles = readdirSync(args.in)
-    .filter((f) => f.startsWith("geojson-level-geom-") && f.endsWith(".geojson"))
-    .sort();
-  const featureCollections = geomFiles.map((f) => readJSON<FeatureCollection>(join(args.in, f)));
-
-  const comEntity = readJSON<ComEntity>(join(args.in, "com-entity.geojson"));
-
-  let manualLabels: ManualLabels = {};
-  try {
-    const raw = readFileSync(args.labels, "utf8");
-    manualLabels = JSON.parse(raw) as ManualLabels;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    // ファイルが無ければ Go 同様、空のまま進む(main.go: os.ReadFile の err != nil は無視)。
-  }
-
-  const input = { nav, comMap, featureCollections, comEntity, manualLabels, version: args.version, hash: args.hash };
+  const input = { mlit, tokyo, gates, levels, exitLabels, version: args.version };
   const { graph, catalog, report } = build(input);
-
-  // V16 用: marker=="entrance" の gid 集合。
-  const geoms = mergeGeoms(featureCollections);
-  const entranceGids = new Set<number>();
-  for (const [gid, f] of geoms) {
-    if (f.properties.marker === "entrance") entranceGids.add(gid);
-  }
-
-  // V15 用: プロセス内でもう一度 build() して決定性を確認する(2プロセスをまたぐ
-  // 決定性の確認は受け入れ条件のとおり別途 CLI を2回実行して行う)。
   const second = build(input);
-
-  const result = verify({
-    graph,
-    catalog,
-    entranceGids,
-    manualLabelKeys: Object.keys(manualLabels),
-    secondRun: { graph: second.graph, catalog: second.catalog },
-  });
+  const result = verify({ graph, catalog, report, secondRun: { graph: second.graph, catalog: second.catalog } });
 
   for (const c of result.checks) {
-    const mark = c.skipped ? "SKIP" : c.pass ? "PASS" : "FAIL";
-    console.log(`[verify ${mark}] ${c.id} ${c.title} — ${c.detail}`);
+    console.log(`[verify ${c.pass ? "PASS" : "FAIL"}] ${c.id} ${c.title} — ${c.detail}`);
   }
+
+  console.log(`\n国交省 ${mlit.mergedDir}${mlit.splitDir ? ` + ${mlit.splitDir}` : ""}、東京都の名前 ${tokyo.length} 件`);
+  console.log(`nodes=${report.nodes} links=${report.links}(向きを開いた本数) 端点欠けで落としたリンク=${report.droppedDanglingLinks.length}`);
+  console.log(`entries=${report.entries} meetings=${report.meetings} exits=${report.exits} destinations=${report.destinations}`);
+  console.log(`縦移動 ${JSON.stringify(report.verticalCounts)}`);
+  console.log(`集合候補の出どころ ${JSON.stringify(report.meetingSources)}`);
+  console.log(`  国交省で同名が複数 ${report.mlitDuplicateNames.length}: ${report.mlitDuplicateNames.join(" / ") || "なし"}`);
+  console.log(`  東京都を国交省に寄せて一つにした ${report.tokyoMerged.length}`);
+  console.log(`  和集合で同名が複数 ${report.unionDuplicateNames.length}: ${report.unionDuplicateNames.join(" / ") || "なし"}`);
+  console.log(`  同じノードに寄った別名 ${report.sameNodeAliases.length}: ${report.sameNodeAliases.slice(0, 8).join(" / ")}${report.sameNodeAliases.length > 8 ? " …" : ""}`);
+  console.log(`出口 除外 ${report.exitsExcluded.length} / 手書きラベル ${report.exitsManual} / 人が確かめた ${report.exitsChecked} / 同じノードで落とした ${report.exitsSameNodeDropped.length}`);
+  for (const k of Object.keys(report.byLine).sort()) console.log(`  ${k.padEnd(18)} ${report.byLine[k]}`);
+
   if (!result.allPass) {
     console.error("\nverify に失敗した項目があるため書き出しを中止した。");
     process.exit(1);
@@ -119,29 +95,9 @@ function main() {
     writeFileSync(join(args.out, name), body);
     console.log(`${name.padEnd(14)} ${(body.length / 1024).toFixed(1).padStart(8)} KB`);
   };
+  console.log("");
   write("graph.json", graph);
   write("catalog.json", catalog);
-
-  console.log(`\nnodes=${report.nodes} links=${report.links}(expanded)`);
-  console.log(
-    `entries=${report.entries} meetings=${report.meetings} exits=${report.exits}` +
-      `(近さで結んだもの ${report.snapped}、遠すぎて外したもの ${report.tooFar}、` +
-      `手書きラベル ${report.manual}、外したもの ${report.excluded}、人が確かめたもの ${report.checked})`,
-  );
-  console.log(`同じ名前が複数あって候補から外した地点: ${report.droppedDuplicate}`);
-  for (const k of Object.keys(report.byLine).sort()) {
-    console.log(`  ${k.padEnd(20)} ${report.byLine[k]}`);
-  }
-  if (report.skippedExitOnly.length > 0) {
-    const sorted = [...report.skippedExitOnly].sort();
-    console.log(`\n出場専用として入口から外した改札 ${sorted.length} 件`);
-    for (const n of sorted) console.log(`  ${n}`);
-  }
-  if (report.gatesWithoutLine.length > 0) {
-    const sorted = [...report.gatesWithoutLine].sort();
-    console.log(`\n路線を判定できなかった改札 ${sorted.length} 件(対応表に足すか、外すかを決める)`);
-    for (const n of sorted) console.log(`  ${n}`);
-  }
 }
 
 main();

@@ -1,4 +1,4 @@
-// ルームの通知 WebSocket。契約は docs/ROOM.md「GET /v1/rooms/:id/ws」。
+// ルームの通知 WebSocket。
 // 状態は流れてこない。「変わった」を受けたら SWR の room キーを取り直させるだけ。
 // 切断中の正しさは useRoom の 5 秒ポーリングが担保する — ここは速さの上乗せ。
 import { useEffect } from "react";

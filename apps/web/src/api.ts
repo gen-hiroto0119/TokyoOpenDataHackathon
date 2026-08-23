@@ -7,6 +7,7 @@
 import type {
   CatalogResponse,
   ExitReportResponse,
+  LandmarksResponse,
   RecommendationResponse,
 } from "worker/src/contract.js";
 import type {
@@ -67,6 +68,9 @@ export const api = {
   dissolve: (id: string, token: string) => request<void>(`/v1/rooms/${id}`, { method: "DELETE" }, token),
   recommendations: (id: string) =>
     request<RecommendationResponse>(`/v1/rooms/${id}/recommendations?limit=10`),
+  // 画面7「いまいる場所」。近くの名前のある地点(改札・集合候補・出口)。
+  landmarks: (nearNodeId: string) =>
+    request<LandmarksResponse>(`/v1/landmarks?near=${encodeURIComponent(nearNodeId)}`),
   // 認証不要。RECOMMENDER.md「表示が違う」: 保存しない、ログに出すだけ。
   reportExit: (catalogId: string, labelJa: string) =>
     request<ExitReportResponse>("/v1/exit-reports", {

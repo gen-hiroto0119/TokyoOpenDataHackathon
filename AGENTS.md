@@ -1,18 +1,13 @@
 # AGENTS.md
 
-このリポジトリで作業するコーディングエージェント向けの手順書です。人間向けの説明は `README.md` と `docs/` を正とします。進捗、画面一覧、部品の完成度、技術スタックの案など、変わりやすい情報はここに書かないでください。
+このリポジトリで作業するコーディングエージェント向けの手順書です。人間向けの説明は `README.md` と `docs/PRODUCT.md` を正とします。進捗、画面一覧、部品の完成度、技術スタックの案など、変わりやすい情報はここに書かないでください。
 
 ## 正本
 
 - プロダクト方針: `docs/PRODUCT.md`
-- 画面一覧と範囲: `docs/SCREENS.md`
-- 推薦 API: `docs/RECOMMENDER.md`
-- 経路の計算: `docs/CORE.md`
-- 調査根拠: `docs/RESEARCH.md`
-- データの棚卸し: `docs/DATA.md`
 - UI: [Figma の Design System](https://www.figma.com/design/9QOfzNGvTkWdmvLVpWPj16/)（Foundations と Components）。`Concept Display` は探索用であり、実装の正本にしない。
 
-仕様が必要なら上記を読み、ここに複製しない。調査メモでは事実と仮説を分けて扱う。
+仕様が必要なら上記を読み、ここに複製しない。調査メモでは事実と仮説を分けて扱う。`docs/` に PRODUCT.md 以外は置かない。
 
 ## 作業規則
 

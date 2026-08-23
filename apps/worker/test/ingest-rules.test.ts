@@ -1,43 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { haversineM, polygonCenter, project } from "../scripts/ingest/geo.js";
-import { codeName, exitNameOf, exitOnly, explainOf, genericName, linesOf } from "../scripts/ingest/rules.js";
+import { deltaZOf, floorLabelOf } from "../scripts/ingest/build.ts";
+import { distPointPolyline, haversineM, pointInRings, project } from "../scripts/ingest/geo.ts";
+import { codeName, exitNameOf, exitOnly, explainOf, genericName, normalizeName, privateName } from "../scripts/ingest/rules.ts";
 
-/**
- * scripts/ingest/{rules,geo}.ts の純関数のテスト。
- *
- * 期待値は tools/ingest/main.go を Go のまま実行した結果（scratchpad/regex_check.go,
- * scratchpad/geo_check.go）と突き合わせて確認済み。ここに書く値は「TS で書いたら
- * こうなりそう」ではなく、Go の実測値そのもの。
- */
-
-describe("linesOf", () => {
-  it("JR の改札名から line.jr を拾う", () => {
-    expect(linesOf("JR 中央西口")).toEqual(["line.jr"]);
-  });
-
-  it("連絡改札は複数路線を拾い、lineID の辞書順で返す", () => {
-    expect(linesOf("京王・丸ノ内線 連絡改札")).toEqual(["line.keio", "line.marunouchi"]);
-  });
-
-  it("英字表記のみでも判定できる", () => {
-    expect(linesOf("KeioLine")).toEqual(["line.keio"]);
-  });
-
-  it("判定できない名前は空配列", () => {
-    expect(linesOf("総合案内所")).toEqual([]);
-  });
-});
+/** scripts/ingest の純関数のテスト。 */
 
 describe("exitOnly", () => {
   it("日本語の出口専用表記にマッチする", () => {
     expect(exitOnly.test("JR中央西口(出口専用)")).toBe(true);
   });
 
-  it("先頭大文字の Exitonly にマッチする", () => {
+  it("大文字小文字を区別する", () => {
     expect(exitOnly.test("Exitonly")).toBe(true);
-  });
-
-  it("小文字の exitonly にはマッチしない（Go に (?i) が無いのと同じ）", () => {
     expect(exitOnly.test("exitonly")).toBe(false);
   });
 });
@@ -47,133 +21,116 @@ describe("exitNameOf", () => {
     expect(exitNameOf("")).toBe("地上出口");
   });
 
-  it("1文字の番号には「出口 」を前に付ける", () => {
+  it("3 文字までの看板の文字には「出口 」を前に付ける", () => {
     expect(exitNameOf("7")).toBe("出口 7");
-  });
-
-  it("3rune の英数字ラベルにも「出口 」を前に付ける", () => {
     expect(exitNameOf("15B")).toBe("出口 15B");
-    expect(exitNameOf("B14")).toBe("出口 B14");
+    expect(exitNameOf("A10")).toBe("出口 A10");
   });
 
-  it("4rune 以上の手書き文はそのまま出す", () => {
+  it("4 文字以上はそのまま出す", () => {
+    expect(exitNameOf("安田口")).toBe("出口 安田口");
     expect(exitNameOf("ルミネエスト 地下入口")).toBe("ルミネエスト 地下入口");
   });
 });
 
-describe("codeName", () => {
-  it.each(["11", "A", "D10", "Unit B3F-115"])("%s は名前として使えないコード扱い", (s) => {
-    expect(codeName.test(s)).toBe(true);
+describe("名前の規則", () => {
+  it("番線・区画コード・内部 ID は名前にしない", () => {
+    expect(codeName.test("11")).toBe(true);
+    expect(codeName.test("D10")).toBe(true);
+    expect(codeName.test("Unit B3F-115")).toBe(true);
+    expect(codeName.test("HOKUO新宿エース南店")).toBe(false);
   });
 
-  it("駅の案内表示に出てくる名前はコード扱いしない", () => {
-    expect(codeName.test("西口交番前")).toBe(false);
-  });
-});
-
-describe("genericName", () => {
-  it("先頭の ATM は大文字小文字を無視してマッチする", () => {
-    expect(genericName.test("ATMコーナー")).toBe(true);
-  });
-
-  it("設備名は部分一致でマッチする", () => {
+  it("設備の一般名は外す。ATM は先頭だけ", () => {
     expect(genericName.test("コインロッカー")).toBe(true);
-  });
-
-  it("ATM が先頭に無いと ATM 由来ではマッチしない（^ が効くのは先頭の ATM だけ）", () => {
-    // 「みずほATM」は他のどの選択肢とも部分一致しないので、genericName 全体としても
-    // 非マッチになる。Go の挙動をそのまま再現した結果で、直す対象ではない。
+    expect(genericName.test("ATM")).toBe(true);
     expect(genericName.test("みずほATM")).toBe(false);
+    expect(genericName.test("西口交番")).toBe(false);
+  });
+
+  it("立って待てない場所は外す", () => {
+    expect(privateName.test("おむつ交換室")).toBe(true);
+    expect(privateName.test("カフェ珈人")).toBe(false);
+  });
+
+  it("説明しやすさ", () => {
+    expect(explainOf("西口交番")).toBe(5);
+    expect(explainOf("観光案内所")).toBe(4);
+    expect(explainOf("西口地下広場")).toBe(3);
+    expect(explainOf("JR 西改札")).toBe(2);
+    expect(explainOf("HOKUO新宿エース南店")).toBe(1);
   });
 });
 
-describe("explainOf", () => {
-  it("交番は5", () => {
-    expect(explainOf("新宿駅前交番")).toBe(5);
-  });
-
-  it("案内所・インフォメーションは4", () => {
-    expect(explainOf("総合案内所")).toBe(4);
-    expect(explainOf("インフォメーションセンター")).toBe(4);
-  });
-
-  it("広場・コンコースは3", () => {
-    expect(explainOf("東西自由広場")).toBe(3);
-    expect(explainOf("中央コンコース")).toBe(3);
-  });
-
-  it("改札は2", () => {
-    expect(explainOf("中央東改札")).toBe(2);
-  });
-
-  it("それ以外（店舗など）は1", () => {
-    expect(explainOf("スターバックスコーヒー")).toBe(1);
+describe("normalizeName", () => {
+  it("空白・記号・全角半角・大文字小文字を揃える", () => {
+    expect(normalizeName("スターバックス コーヒー 新宿西口店")).toBe("スターバックスコーヒー新宿西口店");
+    expect(normalizeName("ＪＩＮＳ")).toBe("jins");
+    expect(normalizeName("粥餐庁 （かゆさんちん）")).toBe("粥餐庁かゆさんちん");
+    expect(normalizeName("R´")).toBe("r");
   });
 });
 
-describe("haversineM", () => {
-  it("同一点は0", () => {
-    expect(haversineM(0, 0, 0, 0)).toBe(0);
+describe("階", () => {
+  it("ordinal → floorLabel は固定表。中間階は上の階に M", () => {
+    expect(floorLabelOf(-3)).toBe("B3F");
+    expect(floorLabelOf(-2.5)).toBe("MB2F");
+    expect(floorLabelOf(-0.5)).toBe("M1F");
+    expect(floorLabelOf(0)).toBe("1F");
+    expect(floorLabelOf(1)).toBe("1F");
+    expect(floorLabelOf(1.5)).toBe("M2F");
+    expect(floorLabelOf(4.5)).toBe("M5F");
+    expect(() => floorLabelOf(7)).toThrow();
   });
 
-  it("新宿駅構内程度の距離（Go の実測値 143.24896726206762m と一致）", () => {
-    expect(haversineM(35.69, 139.7, 35.691, 139.701)).toBeCloseTo(143.24896726206762, 6);
-  });
-
-  it("東京-大阪程度の距離（Go の実測値 402784.183027452m と一致）", () => {
-    expect(haversineM(35.6812, 139.7671, 34.6937, 135.5023)).toBeCloseTo(402784.183027452, 4);
+  it("deltaZ: 屋外の地表と屋内 1 階は同じ高さ。0.5 は 1。2 階分は 2", () => {
+    expect(deltaZOf(0, 1)).toBe(0);
+    expect(deltaZOf(1, 0)).toBe(0);
+    expect(deltaZOf(-1, 0)).toBe(1);
+    expect(deltaZOf(0, -2)).toBe(-2);
+    expect(deltaZOf(-1, -1.5)).toBe(-1);
+    expect(deltaZOf(-2.5, -2)).toBe(1);
+    expect(deltaZOf(0, 2)).toBe(1);
+    expect(deltaZOf(2, 4)).toBe(2);
+    expect(deltaZOf(2, 2)).toBe(0);
   });
 });
 
-describe("project", () => {
-  it("原点と同じ座標は (0, 0)", () => {
-    expect(project(35.69, 139.7, 35.69, 139.7)).toEqual({ x: 0, y: 0 });
+describe("geo", () => {
+  it("haversineM: 経度 0.001° は新宿でおよそ 90m", () => {
+    expect(haversineM(35.69, 139.7, 35.69, 139.701)).toBeCloseTo(90.3, 0);
   });
 
-  it("Go の実測値と一致する（x=90.41247446233118 y=111.32000000053154）", () => {
-    const { x, y } = project(35.691, 139.701, 35.69, 139.7);
-    expect(x).toBeCloseTo(90.41247446233118, 9);
-    expect(y).toBeCloseTo(111.32000000053154, 9);
-  });
-});
-
-describe("polygonCenter", () => {
-  it("閉じ点を含めたまま外周リングを単純平均する（正方形、Go の実測値と一致）", () => {
-    const center = polygonCenter({
-      type: "Polygon",
-      coordinates: [
-        [
-          [139.7, 35.69],
-          [139.701, 35.69],
-          [139.701, 35.691],
-          [139.7, 35.691],
-          [139.7, 35.69],
-        ],
-      ],
-    });
-    expect(center).not.toBeNull();
-    expect(center!.lat).toBeCloseTo(35.6904, 9);
-    expect(center!.lng).toBeCloseTo(139.7004, 9);
+  it("project: 原点からのメートル。x+ は東、y+ は北", () => {
+    const p = project(35.691, 139.701, 35.69, 139.7);
+    expect(p.x).toBeCloseTo(90.4, 0);
+    expect(p.y).toBeCloseTo(111.3, 0);
   });
 
-  it("三角形でも同じ式で平均する（Go の実測値と一致）", () => {
-    const center = polygonCenter({
-      type: "Polygon",
-      coordinates: [
-        [
-          [139.7, 35.68],
-          [139.71, 35.685],
-          [139.705, 35.69],
-          [139.7, 35.68],
-        ],
-      ],
-    });
-    expect(center).not.toBeNull();
-    expect(center!.lat).toBeCloseTo(35.68375, 9);
-    expect(center!.lng).toBeCloseTo(139.70375, 9);
+  it("distPointPolyline: 線分の外側は端点までの距離", () => {
+    const line = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+    ];
+    expect(distPointPolyline({ x: 5, y: 3 }, line)).toBe(3);
+    expect(distPointPolyline({ x: 14, y: 3 }, line)).toBe(5);
   });
 
-  it("Polygon 以外は null", () => {
-    expect(polygonCenter({ type: "Point", coordinates: [139.7, 35.69] })).toBeNull();
+  it("pointInRings: 穴は外側", () => {
+    const outer = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+    ];
+    const hole = [
+      { x: 4, y: 4 },
+      { x: 6, y: 4 },
+      { x: 6, y: 6 },
+      { x: 4, y: 6 },
+    ];
+    expect(pointInRings({ x: 1, y: 1 }, [outer, hole])).toBe(true);
+    expect(pointInRings({ x: 5, y: 5 }, [outer, hole])).toBe(false);
+    expect(pointInRings({ x: 11, y: 5 }, [outer, hole])).toBe(false);
   });
 });

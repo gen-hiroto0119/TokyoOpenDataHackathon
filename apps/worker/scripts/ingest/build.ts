@@ -1,219 +1,188 @@
-// tools/ingest/main.go の変換規則(R1-R33)を IO なしの純関数として移植したもの。
+// 国交省の統合版と東京都の名前のある地点から、graph.json / catalog.json を作る純関数。
+// IO はしない（読むのは main.ts、書くのも main.ts）。
 //
-// 入力は raw.ts の型で表した「パース済みの生データ」。出力は Go の
-// graphOut/catalogOut と同じ形の JSON 構造体(オブジェクトのキー挿入順を
-// Go の struct フィールド順に一致させてある。JSON.stringify はキーの挿入順を
-// そのまま出すので、ここで順序を作ればそれがそのまま出力順になる)。
+// しきい値は下の定数。変えるときは呼び出し側と検査も揃える。
 //
-// R# のコメントは scratchpad/research-ingest.md §1 の表の番号に対応する。
-// 移植しないもの(R1 の zlevel、slug/isNumeric、nav.Drawings)は最初から書いていない。
-//
-// 契約の正本は docs/RECOMMENDER.md。移植元は tools/ingest/main.go(変更禁止)。
+// 決定性: すべての反復を id の昇順に固定し、同点は id の辞書順で決める。
+// 同じ入力なら同じバイト列が出る（verify の V9 が二回実行で確かめる）。
 
-import { polygonCenter, haversineM, project, type Geometry } from "./geo.ts";
-import {
-  codeName,
-  exitNameOf,
-  exitOnly,
-  explainOf,
-  genericName,
-  linesOf,
-  privateName,
-} from "./rules.ts";
-import type { ComEntity, ComMap, FeatureCollection, ManualLabels, NavFile, RawFeature } from "./raw.ts";
+import { createHash } from "node:crypto";
+import type {
+  Catalog,
+  DestinationCatalogEntry,
+  EntryCatalogEntry,
+  ExitCatalogEntry,
+  Graph,
+  GraphLink,
+  GraphNode,
+  MeetingCatalogEntry,
+  VerticalKind,
+} from "../../src/graph.ts";
+import { distPointPolyline, distXY, pointInRings, project, type XY } from "./geo.ts";
+import type { LatLng, MlitData, MlitLink } from "./mlit.ts";
+import { codeName, exitNameOf, explainOf, genericName, normalizeName, platformName, privateName } from "./rules.ts";
+import type { TokyoNamedPoint } from "./tokyo.ts";
 
-/**
- * mergeGeoms が返す、properties の文字列フィールドを Go のゼロ値("")に正規化した
- * feature。Go の struct フィールドは素の string(ポインタでない)なので、JSON に
- * キーが無ければ "" になる。これを一箇所でやってしまえば、以降の build.ts は
- * すべての properties.* アクセスを安全に string として扱える。
- */
-export type NormalizedFeature = Omit<RawFeature, "properties"> & {
-  properties: Required<RawFeature["properties"]>;
+// ---------------------------------------------------------------- 定数
+
+export const DATASET_ID = "tokyo.shinjuku-terminal" as const;
+
+/** 平面座標の原点。データが変わっても座標が動かないように固定する。 */
+export const ORIGIN = { lat: 35.69, lng: 139.7 } as const;
+
+/** 二つのデータのクレジット。国交省の利用規約の加工表記と、東京都の CC BY。 */
+export const ATTRIBUTION_JA =
+  "「新宿駅周辺屋内地図データ」（国土交通省）（https://www.geospatial.jp/ckan/dataset/mlit-indoor-shinjuku-r2）を加工して作成。" +
+  "東京都都市整備局「新宿駅周辺の施設情報及び移動ルート」（CC BY 4.0）を加工して作成。";
+
+/** ordinal → floorLabel の固定表（docs/DATA.md「階」）。中間階は上の階の名前に M を付ける。 */
+export const FLOOR_LABELS: Readonly<Record<string, string>> = {
+  "-3": "B3F",
+  "-2.5": "MB2F",
+  "-2": "B2F",
+  "-1.5": "MB1F",
+  "-1": "B1F",
+  "-0.5": "M1F",
+  "0": "1F",
+  "1": "1F",
+  "1.5": "M2F",
+  "2": "2F",
+  "2.5": "M3F",
+  "3": "3F",
+  "4": "4F",
+  "4.5": "M5F",
 };
 
-/**
- * R2: geojson-level-geom-*.geojson を辞書順ソートしたファイル名の順にマージしてジオメトリを
- * id で索引する。ID 重複時は後勝ち。main.ts が V16(手書きラベルの整合)用に marker=="entrance"
- * の gid 集合を作るのにも使うので、build() 内部からもここからも呼べるように外に出してある。
- */
-export function mergeGeoms(featureCollections: FeatureCollection[]): Map<number, NormalizedFeature> {
-  const geoms = new Map<number, NormalizedFeature>();
-  for (const fc of featureCollections) {
-    for (const f of fc.features) {
-      geoms.set(f.id, {
-        ...f,
-        properties: {
-          display_name: f.properties.display_name ?? "",
-          facility: f.properties.facility ?? "",
-          barrier: f.properties.barrier ?? "",
-          traffic: f.properties.traffic ?? "",
-          marker: f.properties.marker ?? "",
-        },
-      });
-    }
-  }
-  return geoms;
+export function floorLabelOf(ordinal: number): string {
+  const label = FLOOR_LABELS[String(ordinal)];
+  if (label === undefined) throw new Error(`固定表に無い ordinal: ${ordinal}`);
+  return label;
 }
 
-// ---------------------------------------------------------------- 出力の型
-//
-// src/graph.ts の Graph/Catalog と概ね同じ形だが、ここでは実データの挙動に
-// 忠実な2点だけ意図的にずらしてある(src/graph.ts を直すのはこのタスクの
-// スコープ外。等価移植が先):
-//
-//   1. GraphNode.levelIds / geomIds は string[] | null。Go の `var levels []string`
-//      は一度も append されないと nil のままで、json.Marshal(nil slice) は
-//      `null` になる(空配列 `[]` ではない)。実データで geomIds が null になる
-//      ノードが 43 件ある(R7 の gid 欠損 43 件が全リンクに及んだケース)。
-//   2. ExitEntry に labelSource を持つ。src/graph.ts の ExitCatalogEntry には
-//      無いが、実際にコミット済みの apps/worker/data/catalog.json には入っている
-//      (main.go の exitEntry.LabelSource、json:"labelSource")。
+/** 階の高さ。屋外の地表(0)と屋内の 1 階(1)は同じ高さ。 */
+function zOf(ordinal: number): number {
+  return ordinal <= 0 ? ordinal : ordinal - 1;
+}
 
-export type VerticalKind = "none" | "stairs" | "escalator" | "elevator" | "unknown";
+/** 階の差。0.5 は 1 にし、それ以外は整数に丸める。 */
+export function deltaZOf(fromOrdinal: number, toOrdinal: number): number {
+  const d = zOf(toOrdinal) - zOf(fromOrdinal);
+  if (Math.abs(d) < 1e-9) return 0;
+  return Math.sign(d) * Math.max(1, Math.round(Math.abs(d)));
+}
 
-export type GraphNode = {
-  id: string;
-  levelIds: string[] | null;
-  geomIds: string[] | null;
-  nameJa: string | null;
-  floorLabel: string | null;
-  x: number;
-  y: number;
+// しきい値（m）。docs/DATA.md「取り込みでどう結ぶか」。
+const GATE_ON_LINE_M = 1.0;
+const GATE_SNAP_M = 10;
+const MEETING_SNAP_M = 40;
+const NAME_MERGE_M = 30;
+const EXIT_SIGN_SNAP_M = 15;
+const EXIT_OUTDOOR_PATH_M = 120;
+const EXIT_OUTDOOR_XY_M = 25;
+const EXIT_TWIN_M = 40;
+const BOUNDARY_EXIT_CLEAR_M = 15;
+const FACILITY_SNAP_M = 15;
+
+/** 店舗 POI の名前としてみなすカテゴリ。F025 店舗、F039 タクシー乗り場。 */
+const MEETING_POI_CATEGORIES = new Set(["F025", "F039"]);
+/** トイレの POI（F001〜F008）と面（B007〜B014）。 */
+const RESTROOM_POI = /^F00[1-8]$/;
+const RESTROOM_SPACE = /^B0(0[7-9]|1[0-4])$/;
+
+// ---------------------------------------------------------------- 入出力の型
+
+export type GatesFile = Record<string, { nameJa: string; lineIds: string[]; source?: string }>;
+
+/** 東京都の階名 → 国交省 ordinal の優先順。"_comment" のような文字列の値は読み飛ばす。 */
+export type LevelsFile = Record<string, number[] | string>;
+
+export type ExitLabel = {
+  labelJa?: string;
+  exclude?: boolean;
+  confirmed?: boolean;
+  note?: string;
+};
+export type ExitLabelsFile = Record<string, ExitLabel | string>;
+
+export type BuildInput = {
+  mlit: MlitData;
+  tokyo: TokyoNamedPoint[];
+  gates: GatesFile;
+  levels: LevelsFile;
+  exitLabels: ExitLabelsFile;
+  version: string;
 };
 
-export type GraphLink = {
-  id: string;
-  from: string;
-  to: string;
-  distanceM: number;
-  deltaZ: number;
-  vertical: VerticalKind;
-  hours: { start: string; end: string } | null;
-};
+/** カタログの出口。src/graph.ts の型に labelSource を足したもの（人が見るための出どころ）。 */
+export type ExitEntry = ExitCatalogEntry & { labelSource: string };
 
-export type Graph = {
-  datasetId: "tokyo.shinjuku-terminal";
-  datasetVersion: string;
-  graphHash: string;
-  attributionJa: string;
-  nodes: GraphNode[];
-  links: GraphLink[];
-};
+export type BuildCatalog = Omit<Catalog, "exits"> & { exits: ExitEntry[] };
 
-export type EntryEntry = {
-  catalogId: string;
-  lineIds: string[];
-  nodeId: string;
-  nameJa: string;
-};
-
-export type MeetingEntry = {
-  catalogId: string;
-  nodeId: string;
-  nameJa: string;
-  explainability: number;
-  evidence: "hypothesis";
-  lat: number;
-  lng: number;
-  /** 歩いてエレベーターまで何m。届かなければ null。docs/RECOMMENDER.md「近くの設備は取り込みで測る」。 */
-  elevatorM: number | null;
-  /** 同じくトイレ(多機能・オストメイトを含む)まで何m。 */
-  restroomM: number | null;
-};
-
-export type ExitEntry = {
-  catalogId: string;
-  nodeId: string;
-  label: string;
-  nameJa: string;
-  labelSource: string;
-  evidence: "hypothesis" | "checked";
-  lat: number;
-  lng: number;
-};
-
-export type DestinationEntry = {
-  catalogId: string;
-  nameJa: string;
-  lat: number;
-  lng: number;
-};
-
-export type Catalog = {
-  entries: EntryEntry[];
-  meetings: MeetingEntry[];
-  exits: ExitEntry[];
-  destinations: DestinationEntry[];
-};
-
-/** R35 の stdout 報告 + verify V17 が使う付随情報。 */
 export type BuildReport = {
   nodes: number;
+  /** 向きを開いたあとの本数。 */
   links: number;
   entries: number;
   meetings: number;
   exits: number;
   destinations: number;
-  /** 出口: 近さで既存ノードに結べた数。 */
-  snapped: number;
-  /** 出口: 15m 以内にノードが無く捨てた数。 */
-  tooFar: number;
-  /** 出口: 手書きラベルで上書きした数。 */
-  manual: number;
-  /** 出口: 手書きで除外した数。 */
-  excluded: number;
-  /** 出口: 人が見て確かめた数(手書きラベル由来)。 */
-  checked: number;
-  /** 集合候補: 同名重複で外した数。 */
-  droppedDuplicate: number;
-  /** 改札: 路線別の件数(複数路線の改札は両方に加算)。 */
+  /** 端点がノードに無いリンク（落とした）。 */
+  droppedDanglingLinks: string[];
+  /** 1m 以内に乗らず、10m まで寄せた改札。 */
+  gatesSnapped: string[];
+  /** 結べなかった改札。verify で落ちる。 */
+  gatesUnresolved: string[];
   byLine: Record<string, number>;
-  /** 改札: 出場専用として入口から外した名前(重複あり得る)。 */
-  skippedExitOnly: string[];
-  /** 改札: 路線を判定できなかった名前。 */
-  gatesWithoutLine: string[];
-};
-
-export type BuildInput = {
-  nav: NavFile;
-  comMap: ComMap;
-  /**
-   * geojson-level-geom-*.geojson を辞書順ソートしたファイル名の順で読み込んだもの。
-   * 同じ id のジオメトリが複数ファイルに出た場合は後勝ち(R2)。順序はここでは
-   * 検証しない(呼び出し側の main.ts が glob 結果をソートしてから渡す)。
-   */
-  featureCollections: FeatureCollection[];
-  comEntity: ComEntity;
-  manualLabels: ManualLabels;
-  version: string;
-  hash: string;
+  meetingSources: { mlit: number; tokyo: number; gate: number };
+  /** 国交省の中で同じ名前が複数あって外した名前。 */
+  mlitDuplicateNames: string[];
+  /** 国交省と同じ地点として一つにした東京都の名前。 */
+  tokyoMerged: string[];
+  /** 固定表に階が無かった東京都の地点。 */
+  tokyoNoLevel: string[];
+  /** 表の階の面に点が入らず、表の先頭の階にした数。 */
+  tokyoLevelFallback: number;
+  /** 和集合で同じ名前が複数あって外した名前。 */
+  unionDuplicateNames: string[];
+  /** 40m 以内にノードが無かった名前。 */
+  unsnapped: string[];
+  /** 同じノードに寄った別名（両方残す。順位では推薦側が一つにまとめる）。 */
+  sameNodeAliases: string[];
+  snapDistancesM: number[];
+  exitsClosed: string[];
+  exitsNoNode: string[];
+  exitsTwinDropped: number;
+  /** 屋外ノードへ解けず看板の座標のままにした出口。 */
+  exitsNoOutdoor: string[];
+  exitsExcluded: string[];
+  exitsManual: number;
+  exitsChecked: number;
+  exitsSameNodeDropped: string[];
+  boundaryExits: number;
+  verticalCounts: Record<string, number>;
+  floorLabels: Record<string, number>;
 };
 
 export type BuildResult = {
   graph: Graph;
-  catalog: Catalog;
+  catalog: BuildCatalog;
   report: BuildReport;
 };
 
-const VERTICAL_FACILITIES = new Set(["stairs", "escalator", "elevator"]);
+// ---------------------------------------------------------------- 内部の型と道具
 
-// ---------------------------------------------------------------- 集合候補の近くの設備
-//
-// Go 版(tools/ingest/main.go)には無い新規機能(移植ではない)。docs/RECOMMENDER.md
-// 「近くの設備は取り込みで測る」節のとおり、出口探索(src/recommend.ts の
-// shortestFrom/逆向き隣接)と同じ手口を、エレベーター/トイレの近さにも使う。
-// 直線距離は使わない(階をまたぐ設備を近いと誤る)。
+type NodeRec = {
+  node: GraphNode;
+  ordinal: number;
+  inOut: string;
+  xy: XY;
+  ll: LatLng;
+};
 
-/** 逆向きの隣接リスト。各リンクの to -> from。距離は from -> to のまま(向きだけ反転)。 */
-function buildReverseAdjacency(links: GraphLink[]): Map<string, { to: string; distanceM: number }[]> {
-  const adjacency = new Map<string, { to: string; distanceM: number }[]>();
-  for (const link of links) {
-    const list = adjacency.get(link.to);
-    if (list) list.push({ to: link.from, distanceM: link.distanceM });
-    else adjacency.set(link.to, [{ to: link.from, distanceM: link.distanceM }]);
-  }
-  return adjacency;
+type Edge = { to: string; distanceM: number };
+
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** (距離, nodeId) の順に取り出す最小ヒープ。src/recommend.ts の Heap と同じ形。 */
@@ -262,18 +231,13 @@ class DistHeap {
   }
 }
 
-/** 距離の同点判定。浮動小数の誤差だけを吸収する幅。src/recommend.ts の EPS と同じ値。 */
 const DIST_EPS = 1e-9;
 
 /**
- * 多点始点の最短距離(値だけ。経路の復元は要らない)。同点の取り出し順は
- * (距離, nodeId) で決まり、始点集合も辞書順に固定するので、二回実行しても
- * 同じ処理順になる(決定性)。届かないノードは戻り値の Map に現れない。
+ * 多点始点の最短距離（値だけ）。同点の取り出し順は (距離, nodeId)、始点集合も
+ * 辞書順に固定するので、二回実行しても同じ処理順になる。届かないノードは Map に無い。
  */
-function multiSourceDistances(
-  starts: Iterable<string>,
-  adjacency: Map<string, { to: string; distanceM: number }[]>,
-): Map<string, number> {
+function multiSourceDistances(starts: Iterable<string>, adjacency: Map<string, Edge[]>): Map<string, number> {
   const best = new Map<string, number>();
   const queue = new DistHeap();
   for (const s of [...new Set(starts)].sort()) {
@@ -300,425 +264,542 @@ function multiSourceDistances(
   return best;
 }
 
-/** トイレ扱いにする facility 値。多機能・オストメイトを含む。 */
-const RESTROOM_FACILITIES = new Set(["bathroom", "universalaccesstoilet", "ostomate"]);
+/** 始点から経路距離 limit 以内で、accept を満たす一番近いノード。無ければ null。 */
+function nearestByPath(
+  start: string,
+  adjacency: Map<string, Edge[]>,
+  limitM: number,
+  accept: (id: string) => boolean,
+): { id: string; d: number } | null {
+  const best = new Map<string, number>([[start, 0]]);
+  const queue = new DistHeap();
+  queue.push({ id: start, d: 0 });
+  const done = new Set<string>();
+  while (queue.size > 0) {
+    const head = queue.pop();
+    if (!head) break;
+    if (done.has(head.id)) continue;
+    done.add(head.id);
+    if (head.id !== start && accept(head.id)) return { id: head.id, d: head.d };
+    if (head.d > limitM) continue;
+    for (const edge of adjacency.get(head.id) ?? []) {
+      if (done.has(edge.to)) continue;
+      const next = head.d + edge.distanceM;
+      if (next > limitM) continue;
+      const known = best.get(edge.to);
+      if (known !== undefined && next >= known - DIST_EPS) continue;
+      best.set(edge.to, next);
+      queue.push({ id: edge.to, d: next });
+    }
+  }
+  return null;
+}
+
+function verticalOf(link: MlitLink): VerticalKind {
+  switch (link.routeType) {
+    case "4":
+      return "elevator";
+    case "5":
+      return "escalator";
+    case "6":
+      return "stairs";
+    default:
+      return link.levDiff === "2" ? "unknown" : "none";
+  }
+}
+
+function exitLabelOf(file: ExitLabelsFile, id: string): ExitLabel | null {
+  const v = file[id];
+  return v !== undefined && typeof v !== "string" ? v : null;
+}
+
+/** 名前の規則（docs/RECOMMENDER.md「集合候補の選び方」）を通るか。 */
+function usableName(name: string): boolean {
+  return (
+    name !== "" && !codeName.test(name) && !privateName.test(name) && !genericName.test(name) && !platformName.test(name)
+  );
+}
+
+// ---------------------------------------------------------------- 本体
 
 export function build(input: BuildInput): BuildResult {
-  const { nav, comMap, featureCollections, comEntity, manualLabels, version, hash } = input;
+  const { mlit, tokyo, gates, levels, exitLabels, version } = input;
+  const report: BuildReport = {
+    nodes: 0,
+    links: 0,
+    entries: 0,
+    meetings: 0,
+    exits: 0,
+    destinations: 0,
+    droppedDanglingLinks: [],
+    gatesSnapped: [],
+    gatesUnresolved: [],
+    byLine: {},
+    meetingSources: { mlit: 0, tokyo: 0, gate: 0 },
+    mlitDuplicateNames: [],
+    tokyoMerged: [],
+    tokyoNoLevel: [],
+    tokyoLevelFallback: 0,
+    unionDuplicateNames: [],
+    unsnapped: [],
+    sameNodeAliases: [],
+    snapDistancesM: [],
+    exitsClosed: [],
+    exitsNoNode: [],
+    exitsTwinDropped: 0,
+    exitsNoOutdoor: [],
+    exitsExcluded: [],
+    exitsManual: 0,
+    exitsChecked: 0,
+    exitsSameNodeDropped: [],
+    boundaryExits: 0,
+    verticalCounts: {},
+    floorLabels: {},
+  };
+  const toXY = (p: LatLng): XY => project(p.lat, p.lng, ORIGIN.lat, ORIGIN.lng);
 
-  // R1: 階テーブル。zlevel は読むが未使用(移植しない)。
-  const levelName = new Map<number, string>();
-  for (const d of comMap.drawings) {
-    for (const l of d.levels) {
-      levelName.set(l.id, l.properties.name);
-    }
-  }
-
-  // R2: ジオメトリ索引。ID 重複は後勝ち。
-  const geoms = mergeGeoms(featureCollections);
-
-  // R3: 日本語名。全角空白→半角、TrimSpace。先勝ち(既存 gid は上書きしない)。
-  const gidNameJa = new Map<number, string>();
-  for (const ent of comEntity.entities) {
-    const name = ent.properties.name.replaceAll("　", " ").trim();
-    if (name === "") continue;
-    // geometry は欠損することがある(実データで9件)。Go の `[]any` ゼロ値(nil)は
-    // range で0回反復になるだけで、エラーにはならない。
-    for (const g of ent.properties.geometry ?? []) {
-      if (!Array.isArray(g) || g.length === 0) continue;
-      const idRaw = g[0];
-      if (typeof idRaw !== "number") continue;
-      const gid = Math.trunc(idRaw);
-      if (!gidNameJa.has(gid)) gidNameJa.set(gid, name);
-    }
-  }
-  // R4: displayName。
-  function displayName(gid: number): string {
-    const n = gidNameJa.get(gid);
-    if (n !== undefined) return n;
-    return geoms.get(gid)?.properties.display_name ?? "";
-  }
-
-  // R12: ジオメトリ ID を昇順ソートした固定順。R5 の原点平均、以降の全カタログ
-  // 生成をこの順で反復する(map 反復順依存の出力揺れ対策。DATA.md:212)。
-  const gidsSorted = [...geoms.keys()].sort((a, b) => a - b);
-
-  // R5: 平面原点。全ジオメトリの location.coordinates の単純平均。
-  // gid 昇順の固定順で加算する(Go は map 反復順で加算するため実行順依存だった。
-  // ここで直る。x/y が sub-mm 動くのは想定内で、等価ゲートの許容誤差が吸収する)。
-  let sumLat = 0;
-  let sumLng = 0;
-  let n = 0;
-  for (const gid of gidsSorted) {
-    const f = geoms.get(gid)!;
-    if (f.location && f.location.coordinates.length === 2) {
-      sumLng += f.location.coordinates[0]!;
-      sumLat += f.location.coordinates[1]!;
-      n++;
-    }
-  }
-  const lat0 = sumLat / n;
-  const lng0 = sumLng / n;
-
-  // R6-R9: ノード。
-  const nodeLatLng = new Map<number, [number, number]>();
+  // ---- 1. ノード
+  const recs = new Map<string, NodeRec>();
   const nodes: GraphNode[] = [];
-  for (const nd of nav.n) {
-    const levels: string[] = [];
-    const gids: string[] = [];
-    let nameJa: string | null = null;
-    let floor: string | null = null;
-    let lat = 0;
-    let lng = 0;
-    let hasLoc = false;
-    for (const l of nd.l) {
-      const levelNm = levelName.get(l.lid);
-      if (levelNm !== undefined) {
-        levels.push(levelNm);
-        if (floor === null) floor = levelNm;
-      }
-      const gid = l.gid ?? 0;
-      if (gid !== 0) {
-        gids.push(String(gid));
-        const g = geoms.get(gid);
-        if (g) {
-          if (!hasLoc && g.location && g.location.coordinates.length === 2) {
-            lng = g.location.coordinates[0]!;
-            lat = g.location.coordinates[1]!;
-            hasLoc = true;
-          }
-          if (nameJa === null) {
-            const name = displayName(gid);
-            if (name !== "" && (g.properties.facility === "unit" || g.properties.barrier === "gate")) {
-              nameJa = name;
-            }
-          }
-        }
-      }
+  for (const n of [...mlit.nodes].sort((a, b) => cmp(a.id, b.id))) {
+    if (n.id === "") throw new Error("node_id が空のノードがある");
+    if (recs.has(n.id)) throw new Error(`node_id が重複: ${n.id}`);
+    const xy = toXY(n);
+    const floorLabel = floorLabelOf(n.ordinal);
+    const node: GraphNode = { id: n.id, nameJa: null, floorLabel, x: xy.x, y: xy.y };
+    nodes.push(node);
+    recs.set(n.id, { node, ordinal: n.ordinal, inOut: n.inOut, xy, ll: { lat: n.lat, lng: n.lng } });
+    report.floorLabels[floorLabel] = (report.floorLabels[floorLabel] ?? 0) + 1;
+  }
+  const byOrdinal = new Map<number, NodeRec[]>();
+  for (const r of recs.values()) {
+    const list = byOrdinal.get(r.ordinal);
+    if (list) list.push(r);
+    else byOrdinal.set(r.ordinal, [r]);
+  }
+  for (const list of byOrdinal.values()) list.sort((a, b) => cmp(a.node.id, b.node.id));
+
+  /** 同じ階で一番近いノード。同じ距離なら id の若い方。 */
+  function nearestNode(ordinal: number, xy: XY, limitM: number): { rec: NodeRec; d: number } | null {
+    let best: { rec: NodeRec; d: number } | null = null;
+    for (const rec of byOrdinal.get(ordinal) ?? []) {
+      const d = distXY(rec.xy, xy);
+      if (d <= limitM && (best === null || d < best.d)) best = { rec, d };
     }
-    const id = String(nd.id);
-    let x = 0;
-    let y = 0;
-    if (hasLoc) {
-      const p = project(lat, lng, lat0, lng0);
-      x = p.x;
-      y = p.y;
-      nodeLatLng.set(nd.id, [lat, lng]);
-    }
-    nodes.push({
-      id,
-      levelIds: levels.length > 0 ? levels : null,
-      geomIds: gids.length > 0 ? gids : null,
-      nameJa,
-      floorLabel: floor,
-      x,
-      y,
-    });
+    return best;
   }
 
-  // R10: 縦移動種別。リンクに種別が無いので両端のジオメトリから引く。ノード単位でキャッシュ。
-  const nodeById = new Map<number, NavFile["n"][number]>();
-  for (const nd of nav.n) nodeById.set(nd.id, nd);
-
-  function facilityOf(nodeID: number): string {
-    const nd = nodeById.get(nodeID);
-    if (!nd) return "";
-    for (const l of nd.l) {
-      const gid = l.gid ?? 0;
-      const g = geoms.get(gid);
-      if (g && VERTICAL_FACILITIES.has(g.properties.facility)) return g.properties.facility;
-    }
-    return "";
-  }
-  const facCache = new Map<number, string>();
-  function facility(id: number): string {
-    let v = facCache.get(id);
-    if (v === undefined) {
-      v = facilityOf(id);
-      facCache.set(id, v);
-    }
-    return v;
-  }
-
-  // R11: 方向展開。hours は常に null。dz/d は欠損を ?? 0 で Go のゼロ値に合わせる。
+  // ---- 2. リンク（向きを開く）
   const links: GraphLink[] = [];
-  for (const l of nav.l) {
-    const dz = l.dz ?? 0;
-    let vertical: VerticalKind = "none";
-    if (dz !== 0) {
-      vertical = "unknown";
-      const v1 = facility(l.n1);
-      if (v1 !== "") {
-        vertical = v1 as VerticalKind;
-      } else {
-        const v2 = facility(l.n2);
-        if (v2 !== "") vertical = v2 as VerticalKind;
+  const forward = new Map<string, Edge[]>();
+  const reverse = new Map<string, Edge[]>();
+  const addEdge = (map: Map<string, Edge[]>, from: string, edge: Edge) => {
+    const list = map.get(from);
+    if (list) list.push(edge);
+    else map.set(from, [edge]);
+  };
+  for (const l of [...mlit.links].sort((a, b) => cmp(a.id, b.id))) {
+    const a = recs.get(l.startId);
+    const b = recs.get(l.endId);
+    if (!a || !b) {
+      report.droppedDanglingLinks.push(l.id);
+      continue;
+    }
+    if (!(l.distance > 0)) throw new Error(`リンク ${l.id} の distance が正でない: ${l.distance}`);
+    const vertical = verticalOf(l);
+    const dz = deltaZOf(a.ordinal, b.ordinal);
+    const shape =
+      l.shape.length > 2
+        ? l.shape.map((p): [number, number] => {
+            const q = toXY(p);
+            return [q.x, q.y];
+          })
+        : null;
+    const goesForward = l.direction === "1" || l.direction === "2";
+    const goesBackward = l.direction === "1" || l.direction === "3";
+    if (!goesForward && !goesBackward) throw new Error(`リンク ${l.id} の direction が読めない: ${l.direction}`);
+    if (goesForward) {
+      links.push({
+        id: `${l.id}.f`,
+        from: a.node.id,
+        to: b.node.id,
+        distanceM: l.distance,
+        deltaZ: dz,
+        vertical,
+        hours: null,
+        ...(shape ? { shape } : {}),
+      });
+      addEdge(forward, a.node.id, { to: b.node.id, distanceM: l.distance });
+      addEdge(reverse, b.node.id, { to: a.node.id, distanceM: l.distance });
+    }
+    if (goesBackward) {
+      links.push({
+        id: `${l.id}.r`,
+        from: b.node.id,
+        to: a.node.id,
+        distanceM: l.distance,
+        deltaZ: -dz,
+        vertical,
+        hours: null,
+        ...(shape ? { shape: [...shape].reverse() } : {}),
+      });
+      addEdge(forward, b.node.id, { to: a.node.id, distanceM: l.distance });
+      addEdge(reverse, a.node.id, { to: b.node.id, distanceM: l.distance });
+    }
+    report.verticalCounts[vertical] = (report.verticalCounts[vertical] ?? 0) + 1;
+  }
+
+  // ---- 3. 改札（Opening の線 + gates.json）
+  const openingsById = new Map(mlit.openings.map((o) => [o.id, o]));
+  const entries: EntryCatalogEntry[] = [];
+  for (const openingId of Object.keys(gates).sort()) {
+    const gate = gates[openingId]!;
+    const opening = openingsById.get(openingId);
+    if (!opening) {
+      report.gatesUnresolved.push(`${gate.nameJa}: Opening ${openingId} が無い`);
+      continue;
+    }
+    const lineXY = opening.lines.map((line) => line.map(toXY));
+    const cands = (byOrdinal.get(opening.ordinal) ?? []).map((rec) => ({
+      rec,
+      d: lineXY.reduce((m, line) => Math.min(m, distPointPolyline(rec.xy, line)), Number.POSITIVE_INFINITY),
+    }));
+    let hits = cands.filter((c) => c.d <= GATE_ON_LINE_M);
+    if (hits.length === 0) {
+      const near = cands.filter((c) => c.d <= GATE_SNAP_M).sort((x, y) => x.d - y.d || cmp(x.rec.node.id, y.rec.node.id));
+      const first = near[0];
+      if (first) {
+        hits = [first];
+        report.gatesSnapped.push(`${gate.nameJa} ${first.d.toFixed(1)}m`);
       }
     }
-    const a = String(l.n1);
-    const b = String(l.n2);
-    const id = String(l.id);
-    const d = l.d ?? 0;
-    if (d === 1 || d === 3) {
-      links.push({ id: id + ".f", from: a, to: b, distanceM: l.dm, deltaZ: dz, vertical, hours: null });
-    }
-    if (d === 2 || d === 3) {
-      links.push({ id: id + ".r", from: b, to: a, distanceM: l.dm, deltaZ: -dz, vertical, hours: null });
-    }
-  }
-
-  // gidNodes: gid -> ノード ID 列(nav ファイル順)。
-  const gidNodes = new Map<number, number[]>();
-  for (const nd of nav.n) {
-    for (const l of nd.l) {
-      const gid = l.gid ?? 0;
-      if (gid !== 0) {
-        const arr = gidNodes.get(gid);
-        if (arr) arr.push(nd.id);
-        else gidNodes.set(gid, [nd.id]);
-      }
-    }
-  }
-
-  // 集合候補ごとの、歩いてエレベーター/トイレまで何m(docs/RECOMMENDER.md「近くの
-  // 設備は取り込みで測る」)。逆向きの隣接で、全設備ノードを始点にした多点始点
-  // 最短を1回ずつ回す(出口と同じ手口。集合候補→設備の向きを正しく出す)。
-  const elevatorNodeIds = new Set<string>();
-  const restroomNodeIds = new Set<string>();
-  for (const [gid, f] of geoms) {
-    const ids = gidNodes.get(gid);
-    if (!ids || ids.length === 0) continue;
-    if (f.properties.facility === "elevator") {
-      for (const id of ids) elevatorNodeIds.add(String(id));
-    } else if (RESTROOM_FACILITIES.has(f.properties.facility)) {
-      for (const id of ids) restroomNodeIds.add(String(id));
-    }
-  }
-  const reverseAdjacency = buildReverseAdjacency(links);
-  const elevatorDist = multiSourceDistances(elevatorNodeIds, reverseAdjacency);
-  const restroomDist = multiSourceDistances(restroomNodeIds, reverseAdjacency);
-
-  // R13-R17: 改札 entries。
-  const entries: EntryEntry[] = [];
-  const seenEntry = new Set<string>();
-  const gatesWithoutLine: string[] = [];
-  const skippedExitOnly: string[] = [];
-  for (const gid of gidsSorted) {
-    const f = geoms.get(gid)!;
-    const name = displayName(gid);
-    if (f.properties.barrier !== "gate" || name === "") continue;
-    if (exitOnly.test(name) || exitOnly.test(f.properties.display_name)) {
-      skippedExitOnly.push(name);
+    if (hits.length === 0) {
+      report.gatesUnresolved.push(`${gate.nameJa}: ${GATE_SNAP_M}m 以内にノードが無い`);
       continue;
     }
-    let lines = linesOf(name);
-    if (lines.length === 0) lines = linesOf(f.properties.display_name);
-    if (lines.length === 0) {
-      gatesWithoutLine.push(name);
-      continue;
-    }
-    const ids = [...(gidNodes.get(gid) ?? [])].sort((a, b) => a - b);
-    for (const nodeID of ids) {
-      const catalogId = `entry.${gid}.${nodeID}`;
-      if (seenEntry.has(catalogId)) continue;
-      seenEntry.add(catalogId);
-      entries.push({ catalogId, lineIds: lines, nodeId: String(nodeID), nameJa: name });
+    const lineIds = [...new Set(gate.lineIds)].sort();
+    for (const h of hits.sort((x, y) => cmp(x.rec.node.id, y.rec.node.id))) {
+      entries.push({ catalogId: `entry.${openingId}.${h.rec.node.id}`, lineIds, nodeId: h.rec.node.id, nameJa: gate.nameJa });
+      if (h.rec.node.nameJa === null) h.rec.node.nameJa = gate.nameJa;
     }
   }
-  entries.sort((a, b) => (a.catalogId < b.catalogId ? -1 : a.catalogId > b.catalogId ? 1 : 0));
+  entries.sort((a, b) => cmp(a.catalogId, b.catalogId));
+  for (const e of entries) for (const l of e.lineIds) report.byLine[l] = (report.byLine[l] ?? 0) + 1;
 
-  // R18-R24: 集合候補 meetings。
-  const nameCount = new Map<string, number>();
-  for (const gid of geoms.keys()) {
-    const nm = displayName(gid);
-    if (nm !== "") nameCount.set(nm, (nameCount.get(nm) ?? 0) + 1);
+  // ---- 4. 集合候補
+  type Cand = { catalogId: string; nameJa: string; ordinal: number; xy: XY; source: "mlit" | "tokyo" };
+
+  // 4a. 国交省の店舗 POI。同じ名前が複数あれば外す（「ファミリーマート」が 2 つ）。
+  const mlitPois = mlit.facilities
+    .filter((f) => MEETING_POI_CATEGORIES.has(f.category) && usableName(f.name.trim()))
+    .sort((a, b) => cmp(a.id, b.id));
+  const mlitNameCount = new Map<string, number>();
+  for (const f of mlitPois) {
+    const k = normalizeName(f.name.trim());
+    mlitNameCount.set(k, (mlitNameCount.get(k) ?? 0) + 1);
   }
-
-  const meetings: MeetingEntry[] = [];
-  const seenMeeting = new Set<string>();
-  let droppedDuplicate = 0;
-  for (const gid of gidsSorted) {
-    const f = geoms.get(gid)!;
-    const name = displayName(gid);
-    if (name === "" || codeName.test(name) || privateName.test(name)) continue;
-    if (genericName.test(name)) continue;
-    if ((nameCount.get(name) ?? 0) > 1) {
-      droppedDuplicate++;
+  const mlitCands: Cand[] = [];
+  for (const f of mlitPois) {
+    const name = f.name.trim();
+    if ((mlitNameCount.get(normalizeName(name)) ?? 0) > 1) {
+      if (!report.mlitDuplicateNames.includes(name)) report.mlitDuplicateNames.push(name);
       continue;
     }
-    if (exitOnly.test(name) || exitOnly.test(f.properties.display_name)) continue;
-    const fac = f.properties.facility;
-    if (fac !== "unit" && fac !== "hallway" && fac !== "") continue;
-    if (f.properties.traffic !== "") continue;
-    const ids = [...(gidNodes.get(gid) ?? [])].sort((a, b) => a - b);
-    if (ids.length === 0) continue;
-    const first = ids[0]!;
-    const nodeId = String(first);
-    if (seenMeeting.has(nodeId)) continue;
-    const ll = nodeLatLng.get(first);
-    if (!ll) continue;
-    seenMeeting.add(nodeId);
-    meetings.push({
-      catalogId: `meet.${gid}`,
-      nodeId,
-      nameJa: name,
-      explainability: explainOf(name),
-      evidence: "hypothesis",
-      lat: ll[0],
-      lng: ll[1],
-      elevatorM: elevatorDist.get(nodeId) ?? null,
-      restroomM: restroomDist.get(nodeId) ?? null,
+    mlitCands.push({ catalogId: `meet.mlit.${f.id}`, nameJa: name, ordinal: f.ordinal, xy: toXY(f.point), source: "mlit" });
+  }
+
+  // 4b. 東京都の名前。階は固定表で選び、国交省と同じ地点なら一つにする（国交省を残す）。
+  type FloorPoly = { rings: XY[][]; bbox: [number, number, number, number] };
+  const floorsByOrdinal = new Map<number, FloorPoly[]>();
+  for (const fl of mlit.floors) {
+    const rings = fl.rings.map((ring) => ring.map(toXY));
+    const xs = rings.flat().map((p) => p.x);
+    const ys = rings.flat().map((p) => p.y);
+    if (xs.length === 0) continue;
+    const poly: FloorPoly = { rings, bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] };
+    const list = floorsByOrdinal.get(fl.ordinal);
+    if (list) list.push(poly);
+    else floorsByOrdinal.set(fl.ordinal, [poly]);
+  }
+  const inFloor = (ordinal: number, xy: XY): boolean =>
+    (floorsByOrdinal.get(ordinal) ?? []).some(
+      (p) => xy.x >= p.bbox[0] && xy.x <= p.bbox[2] && xy.y >= p.bbox[1] && xy.y <= p.bbox[3] && pointInRings(xy, p.rings),
+    );
+
+  const tokyoCands: Cand[] = [];
+  for (const t of [...tokyo].sort((a, b) => a.gid - b.gid)) {
+    const pref = levels[t.levelLabel];
+    if (!Array.isArray(pref) || pref.length === 0) {
+      report.tokyoNoLevel.push(`${t.nameJa} (${t.levelLabel})`);
+      continue;
+    }
+    const xy = toXY(t);
+    let ordinal = pref.find((o) => inFloor(o, xy));
+    if (ordinal === undefined) {
+      ordinal = pref[0]!;
+      report.tokyoLevelFallback++;
+    }
+    // 正規化した名前が一致すれば距離によらず同じ地点（どちらの中でも固有の名前）。
+    // 一方が他方を含むだけなら 30m 以内のときだけ。
+    const norm = normalizeName(t.nameJa);
+    const twin = mlitCands.find((m) => {
+      const mn = normalizeName(m.nameJa);
+      if (mn === norm) return true;
+      if (distXY(m.xy, xy) > NAME_MERGE_M) return false;
+      const shorter = Math.min(mn.length, norm.length);
+      return shorter >= 3 && (mn.includes(norm) || norm.includes(mn));
     });
-  }
-  meetings.sort((a, b) => (a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0));
-
-  // R25-R33: 出口 exits。
-  const groundNodes: { id: number; lat: number; lng: number }[] = [];
-  for (const nd of nodes) {
-    if (nd.floorLabel !== "1F") continue;
-    const id = Number(nd.id);
-    const ll = nodeLatLng.get(id);
-    if (ll) groundNodes.push({ id, lat: ll[0], lng: ll[1] });
-  }
-  const snapM = 15.0;
-  function snapTo(lat: number, lng: number): { id: number; d: number } | null {
-    let bestID = 0;
-    let bestD = Number.MAX_VALUE;
-    for (const gn of groundNodes) {
-      const d = haversineM(lat, lng, gn.lat, gn.lng);
-      if (d < bestD || (d === bestD && gn.id < bestID)) {
-        bestID = gn.id;
-        bestD = d;
-      }
+    if (twin) {
+      report.tokyoMerged.push(`${t.nameJa} → ${twin.nameJa}`);
+      continue;
     }
-    if (bestID === 0 || bestD > snapM) return null;
-    return { id: bestID, d: bestD };
+    tokyoCands.push({ catalogId: `meet.tokyo.${t.gid}`, nameJa: t.nameJa, ordinal, xy, source: "tokyo" });
   }
 
+  // 4c. 和集合で同じ名前が複数あれば外す。
+  const unionCount = new Map<string, number>();
+  for (const c of [...mlitCands, ...tokyoCands]) {
+    const k = normalizeName(c.nameJa);
+    unionCount.set(k, (unionCount.get(k) ?? 0) + 1);
+  }
+  const unionCands = [...mlitCands, ...tokyoCands].filter((c) => {
+    if ((unionCount.get(normalizeName(c.nameJa)) ?? 0) > 1) {
+      if (!report.unionDuplicateNames.includes(c.nameJa)) report.unionDuplicateNames.push(c.nameJa);
+      return false;
+    }
+    return true;
+  });
+
+  // 4d. ノードへ寄せる。国交省 → 東京都の順。店は通路のノードより密なので、隣り合う店が
+  // 同じノードに寄ることが多い（実データで約 100 件）。名前はすべて残し、ノードの
+  // nameJa には最初の一つを付ける。順位に出すときに同じノードを一つにまとめるのは
+  // 推薦側の仕事（docs/RECOMMENDER.md「集合候補の選び方」）。
+  const meetingByNode = new Map<string, MeetingCatalogEntry>();
+  const meetings: MeetingCatalogEntry[] = [];
+  const pushMeeting = (m: MeetingCatalogEntry, source: "mlit" | "tokyo" | "gate"): void => {
+    const first = meetingByNode.get(m.nodeId);
+    if (first) report.sameNodeAliases.push(`${m.nameJa} = ${first.nameJa}`);
+    else meetingByNode.set(m.nodeId, m);
+    meetings.push(m);
+    report.meetingSources[source]++;
+    const rec = recs.get(m.nodeId)!;
+    if (rec.node.nameJa === null) rec.node.nameJa = m.nameJa;
+  };
+
+  // 改札を先に（改札のノードに店の名前を付けない）。同じ表示名の改札は一つにまとめる。
+  const gateNodeByName = new Map<string, string>();
+  for (const e of entries) {
+    const prev = gateNodeByName.get(e.nameJa);
+    if (prev === undefined || cmp(e.nodeId, prev) < 0) gateNodeByName.set(e.nameJa, e.nodeId);
+  }
+  for (const [nameJa, nodeId] of [...gateNodeByName.entries()].sort((a, b) => cmp(a[1], b[1]))) {
+    pushMeeting(
+      { catalogId: `meet.gate.${nodeId}`, nodeId, nameJa, explainability: 2, evidence: "hypothesis", elevatorM: null, restroomM: null },
+      "gate",
+    );
+  }
+  for (const c of unionCands) {
+    const near = nearestNode(c.ordinal, c.xy, MEETING_SNAP_M);
+    if (!near) {
+      report.unsnapped.push(`${c.nameJa} (${floorLabelOf(c.ordinal)})`);
+      continue;
+    }
+    report.snapDistancesM.push(near.d);
+    pushMeeting(
+      {
+        catalogId: c.catalogId,
+        nodeId: near.rec.node.id,
+        nameJa: c.nameJa,
+        explainability: explainOf(c.nameJa),
+        evidence: "hypothesis",
+        elevatorM: null,
+        restroomM: null,
+      },
+      c.source,
+    );
+  }
+
+  // 4e. 近くの設備。エレベーターのリンクの端点と、トイレの POI・面に一番近いノードから、逆向きの多点始点最短。
+  const elevatorNodeIds = new Set<string>();
+  for (const l of links) if (l.vertical === "elevator") elevatorNodeIds.add(l.from).add(l.to);
+  const restroomNodeIds = new Set<string>();
+  for (const f of mlit.facilities) {
+    if (!RESTROOM_POI.test(f.category)) continue;
+    const near = nearestNode(f.ordinal, toXY(f.point), FACILITY_SNAP_M);
+    if (near) restroomNodeIds.add(near.rec.node.id);
+  }
+  for (const s of mlit.spaces) {
+    if (!RESTROOM_SPACE.test(s.category)) continue;
+    const ring = s.rings[0];
+    if (!ring || ring.length === 0) continue;
+    const pts = ring.map(toXY);
+    const centroid = { x: pts.reduce((a, p) => a + p.x, 0) / pts.length, y: pts.reduce((a, p) => a + p.y, 0) / pts.length };
+    const near = nearestNode(s.ordinal, centroid, FACILITY_SNAP_M);
+    if (near) restroomNodeIds.add(near.rec.node.id);
+  }
+  const elevatorDist = multiSourceDistances(elevatorNodeIds, reverse);
+  const restroomDist = multiSourceDistances(restroomNodeIds, reverse);
+  for (const m of meetings) {
+    m.elevatorM = elevatorDist.get(m.nodeId) ?? null;
+    m.restroomM = restroomDist.get(m.nodeId) ?? null;
+  }
+  meetings.sort((a, b) => cmp(a.nodeId, b.nodeId) || cmp(a.catalogId ?? "", b.catalogId ?? ""));
+
+  // ---- 5. 出口
+  type ExitCand = { id: string; name: string; ordinal: number; xy: XY; sign: NodeRec; floorDir: string };
+  const exitCands: ExitCand[] = [];
+  for (const f of mlit.facilities.filter((x) => x.category === "F108").sort((a, b) => cmp(a.id, b.id))) {
+    const name = f.name.trim();
+    if (name.includes("閉鎖")) {
+      report.exitsClosed.push(name);
+      continue;
+    }
+    const xy = toXY(f.point);
+    const near = nearestNode(f.ordinal, xy, EXIT_SIGN_SNAP_M);
+    if (!near) {
+      report.exitsNoNode.push(`${name} (${f.floorDir})`);
+      continue;
+    }
+    exitCands.push({ id: f.id, name, ordinal: f.ordinal, xy, sign: near.rec, floorDir: f.floorDir });
+  }
+  // 地上と地下に同じ看板があれば地下の方だけ残す。人手補正は地下の id に引き継ぐ。
+  const carried = new Map<string, ExitLabel>();
+  const underground = exitCands.filter((e) => e.ordinal < 0);
+  const kept = exitCands.filter((e) => {
+    if (e.ordinal < 0) return true;
+    const twin = underground.find((u) => u.name === e.name && distXY(u.xy, e.xy) <= EXIT_TWIN_M);
+    if (!twin) return true;
+    report.exitsTwinDropped++;
+    const label = exitLabelOf(exitLabels, e.id);
+    if (label && !exitLabelOf(exitLabels, twin.id) && !carried.has(twin.id)) carried.set(twin.id, label);
+    return false;
+  });
+  const isOutdoor = (id: string): boolean => {
+    const r = recs.get(id)!;
+    return (r.inOut === "1" || r.inOut === "2") && r.ordinal >= 0 && Number.isInteger(r.ordinal);
+  };
+  const exitByNode = new Map<string, ExitEntry>();
   const exits: ExitEntry[] = [];
-  let snapped = 0;
-  let tooFar = 0;
-  let manual = 0;
-  let excluded = 0;
-  let checked = 0;
-  // ノード ID -> そのノードに載っている出口にラベルがあるか。R28 の重複排除に使う。
-  const seenExit = new Map<string, boolean>();
-  for (const gid of gidsSorted) {
-    const f = geoms.get(gid)!;
-    if (f.properties.marker !== "entrance") continue;
-    const ring = polygonCenter(f.geometry as Geometry);
-    if (!ring) continue;
-
-    const ids = gidNodes.get(gid) ?? [];
-    let nodeInt = 0;
-    let bestD = Number.MAX_VALUE;
-    for (const id of ids) {
-      const ll = nodeLatLng.get(id);
-      if (!ll) continue;
-      const d = haversineM(ring.lat, ring.lng, ll[0], ll[1]);
-      if (d < bestD || (d === bestD && id < nodeInt)) {
-        nodeInt = id;
-        bestD = d;
+  const pushExit = (e: ExitEntry): void => {
+    const prev = exitByNode.get(e.nodeId);
+    if (prev) {
+      // 同じノードに二つ。看板のある方、同じなら id の若い方を残す。
+      const keepPrev = prev.label !== "" || e.label === "" ? true : false;
+      if (keepPrev) {
+        report.exitsSameNodeDropped.push(`${e.nameJa} (${prev.nameJa} と同じノード)`);
+        return;
       }
+      report.exitsSameNodeDropped.push(`${prev.nameJa} (${e.nameJa} と同じノード)`);
+      exits.splice(exits.indexOf(prev), 1);
     }
-    if (nodeInt === 0) {
-      const snap = snapTo(ring.lat, ring.lng);
-      if (!snap) {
-        tooFar++;
+    exitByNode.set(e.nodeId, e);
+    exits.push(e);
+  };
+  for (const e of kept) {
+    let ll = e.sign.ll;
+    if (e.ordinal < 0) {
+      const out = nearestByPath(e.sign.node.id, forward, EXIT_OUTDOOR_PATH_M, (id) => isOutdoor(id) && distXY(recs.get(id)!.xy, e.xy) <= EXIT_OUTDOOR_XY_M);
+      if (out) ll = recs.get(out.id)!.ll;
+      else report.exitsNoOutdoor.push(`${e.name} (${e.floorDir})`);
+    }
+    let label = e.name;
+    let labelSource = "mlit";
+    let evidence: ExitEntry["evidence"] = "hypothesis";
+    const manual = exitLabelOf(exitLabels, e.id) ?? carried.get(e.id) ?? null;
+    if (manual) {
+      if (manual.exclude) {
+        report.exitsExcluded.push(e.name);
         continue;
       }
-      nodeInt = snap.id;
-      snapped++;
-    }
-    const nodeId = String(nodeInt);
-    if (seenExit.has(nodeId)) {
-      const prevHasLabel = seenExit.get(nodeId)!;
-      if (prevHasLabel || f.properties.display_name.trim() === "") continue;
-      const idx = exits.findIndex((e) => e.nodeId === nodeId);
-      if (idx !== -1) exits.splice(idx, 1);
-    }
-    const guard = nodeLatLng.get(nodeInt);
-    if (!guard) continue;
-    // 出口の座標は地物そのものの代表点を使う。ノードは経路上の点でしかない。
-    const finalLat = ring.lat;
-    const finalLng = ring.lng;
-
-    let label = f.properties.display_name.trim();
-    let source = "tokyo";
-    let evidence: "hypothesis" | "checked" = "hypothesis";
-    const m = manualLabels[String(gid)];
-    if (m) {
-      if (m.exclude) {
-        excluded++;
-        continue;
-      }
-      const v = (m.labelJa ?? "").trim();
+      const v = (manual.labelJa ?? "").trim();
       if (v !== "" && v !== label) {
         label = v;
-        source = "manual";
-        manual++;
+        labelSource = "manual";
+        report.exitsManual++;
       }
-      if (m.confirmed || (m.labelJa ?? "") !== "") {
+      if (manual.confirmed || v !== "") {
         evidence = "checked";
-        checked++;
+        report.exitsChecked++;
       }
     }
-    if (label === "") source = "";
-    // Go は置き換えた件数を replaced 変数で数えているが、その値は main.go の
-    // 最終 fmt.Printf のフォーマット文字列に含まれておらず未使用(移植しない)。
-    seenExit.set(nodeId, label !== "");
-    exits.push({
-      catalogId: `exit.${gid}`,
-      nodeId,
+    if (label === "") labelSource = "";
+    pushExit({
+      catalogId: `exit.${e.id}`,
+      nodeId: e.sign.node.id,
       label,
       nameJa: exitNameOf(label),
-      labelSource: source,
+      labelSource,
       evidence,
-      lat: finalLat,
-      lng: finalLng,
+      lat: ll.lat,
+      lng: ll.lng,
     });
   }
-  exits.sort((a, b) => (a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0));
+  // 地上の境界ノードで、近くに出口 POI が無いものは無名の出口。
+  const f108XY = mlit.facilities.filter((f) => f.category === "F108").map((f) => toXY(f.point));
+  for (const rec of [...recs.values()].sort((a, b) => cmp(a.node.id, b.node.id))) {
+    if (rec.inOut !== "2" || rec.ordinal < 0 || !Number.isInteger(rec.ordinal)) continue;
+    if (exitByNode.has(rec.node.id)) continue;
+    if (f108XY.some((p) => distXY(p, rec.xy) <= BOUNDARY_EXIT_CLEAR_M)) continue;
+    let label = "";
+    let labelSource = "";
+    let evidence: ExitEntry["evidence"] = "hypothesis";
+    const manual = exitLabelOf(exitLabels, rec.node.id);
+    if (manual) {
+      if (manual.exclude) {
+        report.exitsExcluded.push(`境界ノード ${rec.node.id}`);
+        continue;
+      }
+      const v = (manual.labelJa ?? "").trim();
+      if (v !== "") {
+        label = v;
+        labelSource = "manual";
+        report.exitsManual++;
+      }
+      if (manual.confirmed || v !== "") {
+        evidence = "checked";
+        report.exitsChecked++;
+      }
+    }
+    report.boundaryExits++;
+    pushExit({
+      catalogId: `exit.node.${rec.node.id}`,
+      nodeId: rec.node.id,
+      label,
+      nameJa: exitNameOf(label),
+      labelSource,
+      evidence,
+      lat: rec.ll.lat,
+      lng: rec.ll.lng,
+    });
+  }
+  exits.sort((a, b) => cmp(a.nodeId, b.nodeId) || cmp(a.catalogId, b.catalogId));
 
-  const destinations: DestinationEntry[] = [
+  // ---- 6. 目的地（プリセット）
+  const destinations: DestinationCatalogEntry[] = [
     { catalogId: "dest.tokyo-metropolitan-government", nameJa: "東京都庁", lat: 35.689487, lng: 139.691711 },
     { catalogId: "dest.busta-shinjuku", nameJa: "バスタ新宿", lat: 35.686622, lng: 139.700258 },
     { catalogId: "dest.kabukicho", nameJa: "歌舞伎町", lat: 35.694945, lng: 139.702734 },
     { catalogId: "dest.shinjuku-central-park", nameJa: "新宿中央公園", lat: 35.690833, lng: 139.690278 },
   ];
 
+  // ---- 7. まとめ
+  const graphHash = createHash("sha256").update(JSON.stringify({ nodes, links })).digest("hex");
   const graph: Graph = {
-    datasetId: "tokyo.shinjuku-terminal",
+    datasetId: DATASET_ID,
     datasetVersion: version,
-    graphHash: hash,
-    attributionJa: "東京都都市整備局「新宿駅周辺の施設情報及び移動ルート」（CC BY 4.0）",
+    graphHash,
+    attributionJa: ATTRIBUTION_JA,
     nodes,
     links,
   };
-  const catalog: Catalog = { entries, meetings, exits, destinations };
+  const catalog: BuildCatalog = { entries, meetings, exits, destinations };
 
-  const byLine: Record<string, number> = {};
-  for (const e of entries) {
-    for (const l of e.lineIds) byLine[l] = (byLine[l] ?? 0) + 1;
-  }
-
-  const report: BuildReport = {
-    nodes: nodes.length,
-    links: links.length,
-    entries: entries.length,
-    meetings: meetings.length,
-    exits: exits.length,
-    destinations: destinations.length,
-    snapped,
-    tooFar,
-    manual,
-    excluded,
-    checked,
-    droppedDuplicate,
-    byLine,
-    skippedExitOnly,
-    gatesWithoutLine,
-  };
+  report.nodes = nodes.length;
+  report.links = links.length;
+  report.entries = entries.length;
+  report.meetings = meetings.length;
+  report.exits = exits.length;
+  report.destinations = destinations.length;
 
   return { graph, catalog, report };
 }

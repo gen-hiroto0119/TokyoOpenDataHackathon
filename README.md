@@ -54,7 +54,7 @@
 
 東京都都市整備局「新宿駅周辺の施設情報及び移動ルート」（CC BY 4.0、2023-02-20 公開）。取得日と SHA-256 は [`data/manifests/shinjuku-terminal.json`](data/manifests/shinjuku-terminal.json) に残しています。
 
-取り込んだ結果（[`docs/DATA.md`](docs/DATA.md) に棚卸し）:
+取り込んだ結果:
 
 | | |
 |---|---|
@@ -112,12 +112,6 @@ pnpm --filter worker ingest:compare  # Go 版の出力と等価か
 | 文書 | 中身 |
 |---|---|
 | [`docs/PRODUCT.md`](docs/PRODUCT.md) | 解く問題、利用体験、集合地点の評価、MVP、成功条件 |
-| [`docs/SCREENS.md`](docs/SCREENS.md) | 画面と部品。決めたことと採らなかったこと |
-| [`docs/RECOMMENDER.md`](docs/RECOMMENDER.md) | 推薦 API の HTTP 契約 |
-| [`docs/CORE.md`](docs/CORE.md) | 改札→集合場所→出口の計算。探索の向き |
-| [`docs/ROOM.md`](docs/ROOM.md) | 共有ルームの状態と契約 |
-| [`docs/RESEARCH.md`](docs/RESEARCH.md) | データ出典、屋内測位の制約、Live AI の検討 |
-| [`docs/DATA.md`](docs/DATA.md) | 実データを取り込んで数えた棚卸し。機能ごとの可否 |
 | [`AGENTS.md`](AGENTS.md) | コーディングエージェント向けの手順書 |
 
 ## 出典

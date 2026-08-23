@@ -1,5 +1,5 @@
 // ルーム 1 件ぶんの状態。Durable Object。
-// 契約は docs/ROOM.md。計算は持たない。
+// 計算は持たない。
 
 import {
   RoomError,

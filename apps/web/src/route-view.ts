@@ -1,8 +1,8 @@
 // 契約(worker/src/contract.ts)の Leg / Step / ConfirmationPoint を画面6・7の行に
 // 変換する純関数。HTTP も localStorage も知らない(api.ts / session.ts の仕事)。
 import type {
-  ConfirmationKind,
   ConfirmationPoint,
+  Landmark,
   Leg,
   MeetingCandidate,
   RecommendationResponse,
@@ -26,19 +26,26 @@ export type PathRow = {
   Icon: IconName;
 };
 
-/** 階の並び(下→上)。RECOMMENDER.md の実データに合わせた固定表。学習しない。 */
+/**
+ * 階の並び(下→上)。docs/DATA.md「階」の固定表(国交省の ordinal と対応する
+ * floorLabel)に合わせた順。中間階は上の階の名前に M を付ける。学習しない。
+ */
 const FLOOR_ORDER = [
   "B5F",
   "B4F",
   "B3F",
   "MB2F",
   "B2F",
+  "MB1F",
   "B1F",
   "M1F",
   "1F",
+  "M2F",
   "2F",
+  "M3F",
   "3F",
   "4F",
+  "M5F",
 ] as const;
 
 function floorIndex(label: string | null): number | null {
@@ -275,40 +282,21 @@ export function handoffFrom(label: string): string {
   return label.length > 0 ? `出口 ${label} を出たところから` : "地上出口を出たところから";
 }
 
-// ---------------------------------------------------------------- 画面7: 確認点の行
+// ---------------------------------------------------------------- 画面7: 近くの地点の行
 
-export type HereRow = { nodeId: string; nameJa: string; detailJa: string };
+export type HereRow = { nodeId: string; nameJa: string; detailJa: string; distanceJa: string };
 
-function confirmationKindLabel(kind: ConfirmationKind): string {
-  switch (kind) {
-    case "gate":
-      return "改札";
-    case "floor":
-      return "階の変わり目";
-    case "branch":
-      return "分岐";
-    case "landmark":
-      return "集合場所";
-    default: {
-      const _never: never = kind;
-      return _never;
-    }
-  }
-}
-
-export function hereRowsOf(confirmations: readonly ConfirmationPoint[]): HereRow[] {
-  // 無名の分岐は出さない。名前が無い点は、着いても合っているか現地で確かめようが
-  // ない(出口の 60m 加点と同じ理屈)。階の変わり目だけは階段そのものが目印に
-  // なるので無名でも残す。
-  return confirmations
-    .filter((c) => c.nameJa !== "" || c.kind === "floor")
-    .map((c) => ({
-    nodeId: c.nodeId,
-    nameJa: c.nameJa,
-    detailJa:
-      c.status === "confirmed"
-        ? `${confirmationKindLabel(c.kind)} · 通過済み`
-        : confirmationKindLabel(c.kind),
+/**
+ * GET /v1/landmarks の応答を画面7の行に変える。距離は表示側で丸める
+ * (docs/RECOMMENDER.md「distanceM は丸めない(表示側で丸める)」)。
+ * 「約」は付けない(既存の手順行「直進する · 40m」と同じ形)。
+ */
+export function hereRowsOf(landmarks: readonly Landmark[]): HereRow[] {
+  return landmarks.map((l) => ({
+    nodeId: l.nodeId,
+    nameJa: l.nameJa,
+    detailJa: l.floorLabel ?? "",
+    distanceJa: `${Math.round(l.distanceM)}m`,
   }));
 }
 

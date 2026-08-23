@@ -1,66 +1,51 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { mergeGeoms, type Catalog, type Graph } from "../scripts/ingest/build.js";
-import { readJSON, type FeatureCollection, type ManualLabels } from "../scripts/ingest/raw.js";
-import { verify } from "../scripts/ingest/verify.js";
+import { build, type ExitLabelsFile, type GatesFile, type LevelsFile } from "../scripts/ingest/build.ts";
+import { DEFAULT_VERSION } from "../scripts/ingest/main.ts";
+import { loadMlit } from "../scripts/ingest/mlit.ts";
+import { loadTokyoNamedPoints } from "../scripts/ingest/tokyo.ts";
+import { verify } from "../scripts/ingest/verify.ts";
 
 /**
- * apps/worker/data（コミット済みの Go 出力）に scripts/ingest/verify.ts の V1〜V17 を
- * かける。等価移植の受け入れ条件の一つ: 「Go 出力・TS 出力の両方で V1〜V17 全 pass」
- * のうち、Go 出力側を CI で常時確認する回帰テスト。
- *
- * apps/worker/data/*.json はリポジトリにコミットされているので通常は存在するが、
- * 万一削除された環境でテストスイート全体を壊さないようデータ存在ガードを付ける
- * （real.test.ts と同種の実データ依存テストの流儀）。V16 が要る data/raw/extracted は
- * .gitignore 対象（/data/raw/）なので、無ければ V16 だけ skip され、他の検査には影響しない。
+ * 生データ（data/raw、git に入れない）があるときだけ動く。取り込みを最初から最後まで回し、
+ * 検査が全部通ること、書き出してコミット済みの apps/worker/data が今の取り込み結果と
+ * バイト一致すること（取り込み直しを忘れていないこと）を見る。
  */
 const workerDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const dataDir = join(workerDir, "data");
-const GRAPH = join(dataDir, "graph.json");
-const CATALOG = join(dataDir, "catalog.json");
-const repoRoot = join(workerDir, "../..");
-const rawDir = join(repoRoot, "data/raw/extracted");
-const labelsFile = join(repoRoot, "data/labels/exits.json");
+const repoRoot = resolve(workerDir, "../..");
+const mlitDir = join(repoRoot, "data/raw/mlit");
+const tokyoDir = join(repoRoot, "data/raw/extracted");
+const labelsDir = join(repoRoot, "data/labels");
+const hasData = existsSync(mlitDir) && existsSync(tokyoDir);
 
-const hasData = existsSync(GRAPH) && existsSync(CATALOG);
+function readJSON<T>(path: string): T {
+  return JSON.parse(readFileSync(path, "utf8")) as T;
+}
 
-describe.skipIf(!hasData)("verify(apps/worker/data)", () => {
-  const graph = JSON.parse(readFileSync(GRAPH, "utf8")) as Graph;
-  const catalog = JSON.parse(readFileSync(CATALOG, "utf8")) as Catalog;
+describe.skipIf(!hasData)("ingest: 生データから build して verify", () => {
+  const input = {
+    mlit: loadMlit(mlitDir),
+    tokyo: loadTokyoNamedPoints(tokyoDir),
+    gates: readJSON<GatesFile>(join(labelsDir, "gates.json")),
+    levels: readJSON<LevelsFile>(join(labelsDir, "tokyo-levels.json")),
+    exitLabels: readJSON<ExitLabelsFile>(join(labelsDir, "exits.json")),
+    version: DEFAULT_VERSION,
+  };
+  const first = build(input);
+  const second = build(input);
+  const result = verify({ ...first, secondRun: { graph: second.graph, catalog: second.catalog } });
 
-  let entranceGids: Set<number> | undefined;
-  if (existsSync(rawDir)) {
-    const files = readdirSync(rawDir)
-      .filter((f) => f.startsWith("geojson-level-geom-") && f.endsWith(".geojson"))
-      .sort();
-    const featureCollections = files.map((f) => readJSON<FeatureCollection>(join(rawDir, f)));
-    const geoms = mergeGeoms(featureCollections);
-    entranceGids = new Set<number>();
-    for (const [gid, f] of geoms) {
-      if (f.properties.marker === "entrance") entranceGids.add(gid);
-    }
-  }
-  const manualLabelKeys = existsSync(labelsFile)
-    ? Object.keys(JSON.parse(readFileSync(labelsFile, "utf8")) as ManualLabels)
-    : undefined;
-
-  const result = verify({ graph, catalog, entranceGids, manualLabelKeys });
-
-  it("V1〜V17 全 pass（V15 は単一ディレクトリのため skip、V16 は data/raw/extracted があれば実施）", () => {
-    const failed = result.checks.filter((c) => !c.skipped && !c.pass);
-    if (failed.length > 0) {
-      console.error(failed.map((c) => `[FAIL] ${c.id} ${c.title} — ${c.detail}`).join("\n"));
-    }
+  it("検査が全部通る", () => {
+    const failed = result.checks.filter((c) => !c.pass).map((c) => `${c.id} ${c.title}: ${c.detail}`);
     expect(failed).toEqual([]);
-    expect(result.allPass).toBe(true);
   });
 
-  it.each(result.checks.filter((c) => !c.skipped).map((c) => [c.id, c] as const))(
-    "%s は pass する",
-    (_id, check) => {
-      expect(check.pass, check.detail).toBe(true);
-    },
-  );
+  it("書き出し済みの graph.json / catalog.json が今の取り込み結果と一致する", () => {
+    const graphOnDisk = readFileSync(join(workerDir, "data/graph.json"), "utf8");
+    const catalogOnDisk = readFileSync(join(workerDir, "data/catalog.json"), "utf8");
+    expect(graphOnDisk).toBe(JSON.stringify(first.graph));
+    expect(catalogOnDisk).toBe(JSON.stringify(first.catalog));
+  });
 });

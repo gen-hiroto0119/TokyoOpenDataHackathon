@@ -8,9 +8,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "ingest": "node scripts/ingest/main.ts",
-    "ingest:compare": "node scripts/ingest/compare.ts",
-    "ingest:verify": "node scripts/ingest/verify.ts"
+    "ingest": "node scripts/ingest/main.ts"
   },
   "dependencies": {
     "@hono/valibot-validator": "^0.6.1",

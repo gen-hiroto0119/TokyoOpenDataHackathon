@@ -1,0 +1,52 @@
+{
+  "datasetId": "tokyo.shinjuku-terminal",
+  "source": "mlit-indoor-shinjuku-r2",
+  "title": "新宿駅周辺屋内地図オープンデータ（令和2年度更新版）",
+  "publisher": "国土交通省政策統括官（高精度測位社会プロジェクト）",
+  "license": "政府標準利用規約（第2.0版）。CC BY 4.0 と互換",
+  "attributionJa": "「新宿駅周辺屋内地図データ」（国土交通省）（https://www.geospatial.jp/ckan/dataset/mlit-indoor-shinjuku-r2）を加工して作成",
+  "catalogUrl": "https://www.geospatial.jp/ckan/dataset/mlit-indoor-shinjuku-r2",
+  "retrievedAt": "2026-08-23",
+  "publishedAt": "2020-10-21",
+  "updatedAt": "2024-10-05",
+  "resources": [
+    {
+      "name": "新宿駅周辺屋内地図オープンデータ（令和2年度更新版）_統合版（Shapefile）",
+      "role": "正本。階ごとの地物・設備 POI・歩行網",
+      "folder": "新宿駅周辺屋内地図オープンデータ_統合版（Shapefile）",
+      "files": 290,
+      "bytes": 22282755,
+      "sha256": "cce49b64f4f2535a9b694dd68220a10b9cc6939a8e5121a035762dfa62dbda9c"
+    },
+    {
+      "name": "新宿駅周辺屋内地図オープンデータ（令和2年度更新版）（Shapefile）",
+      "role": "施設別。Floor.id から施設名と原典・年代（meta.xml）を引くだけ",
+      "folder": "新宿駅周辺屋内地図オープンデータ（Shapefile）",
+      "files": 986,
+      "bytes": 21823403,
+      "sha256": "f1071f7418ee01be6696f4fac7db560087dd22eef92b1e12c1741f55466b90c1"
+    },
+    {
+      "name": "新宿駅周辺屋内地図オープンデータ（令和2年度更新版）（GeoPDF）",
+      "role": "見た目と配色の参照。取り込まない",
+      "folder": "新宿駅周辺屋内地図オープンデータ（GeoPDF）",
+      "files": 22,
+      "bytes": 25830930,
+      "sha256": "f81a7b88a912c3a46a074ff6d50b0bee4d7f6db2f5b1c5242c019811bd2802d9"
+    },
+    {
+      "name": "製品仕様書PDF",
+      "role": "階層別屋内地理空間情報データ仕様書（案）平成30年3月改訂版。コード表の正"
+    },
+    {
+      "name": "利用規約PDF / 設備凡例PDF / 地物凡例PDF",
+      "role": "規約と公式の配色"
+    }
+  ],
+  "notes": [
+    "sha256 はフォルダ内の全ファイル（.DS_Store を除く）を相対パス順に並べ、パスと各ファイルの SHA-256 を連ねて取ったもの。ZIP そのものは手元に残していない。",
+    "座標系は JGD2011 緯度経度。DBF は UTF-8。",
+    "統合版は施設別版の修正・増補版で id は共通。歩行網はノード 1,985、リンク 2,549（端点の無いリンク 7 本を含む）。",
+    "展開したフォルダは data/raw/mlit/ に置く。リポジトリには入れない（.gitignore）。"
+  ]
+}

@@ -11,6 +11,8 @@ storybook-static/
 !.env.example
 
 /data/raw/
+/Dataset/
+apps/worker/scripts/map-probe/out/
 *.zip
 /data/graph/
 

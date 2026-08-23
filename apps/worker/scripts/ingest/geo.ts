@@ -1,11 +1,6 @@
-// 座標変換とジオメトリの純関数。
-//
-// 移植元: tools/ingest/main.go の haversineM / project / polygonCenter。
-// 数式・演算の順序を Go と揃えている。Math.cos/Math.sin と Go の math.Cos/math.Sin は
-// 最終 ulp の一致が保証されないため、呼び出し側（等価性ゲート）では x/y にだけ
-// 小さな許容誤差を持たせる設計になっている（scratchpad/research-ingest.md §3）。
+// 座標の純関数。
 
-/** 地球を球とみなした地表距離。単位は m。 */
+/** 地球を球とみなした地表距離。単位は m。出口の持ち出しコストと同じ式。 */
 export function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const r = 6371000.0;
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -18,9 +13,8 @@ export function haversineM(lat1: number, lng1: number, lat2: number, lng2: numbe
 }
 
 /**
- * 緯度経度を、原点 (lat0, lng0) を基準にしたメートルの平面へ落とす。
- * 手順の方向を出すためだけに使う。距離は都データの dm をそのまま使うので、
- * ここでの誤差は経路探索の重みには影響しない。
+ * 緯度経度を、原点 (lat0, lng0) を基準にしたメートルの平面へ落とす。x+ は東、y+ は北。
+ * 手順の方向と地図、近さの判定に使う。経路の重みは国交省の `distance` をそのまま使う。
  */
 export function project(lat: number, lng: number, lat0: number, lng0: number): { x: number; y: number } {
   const mPerDegLat = 111320.0;
@@ -29,32 +23,43 @@ export function project(lat: number, lng: number, lat0: number, lng0: number): {
   return { x, y };
 }
 
-/** GeoJSON の座標。[lng, lat] の順（GeoJSON の仕様どおり）。 */
-export type Point2 = [number, number];
+export type XY = { x: number; y: number };
 
-export type Geometry = {
-  type: string;
-  coordinates: unknown;
-};
+export function distXY(a: XY, b: XY): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
 
-/**
- * 出入口は面（Polygon）で入っている。その外周リング（coordinates[0]）の頂点を
- * 単純平均した点を代表点にする。GeoJSON の閉じ点（先頭=末尾の重複）も平均に
- * 含めたまま（Go の挙動をそのまま再現。重心の厳密な計算ではないが、直さない）。
- *
- * Polygon 以外、またはリングが読めない場合は null（Go の center{ok:false} に対応）。
- */
-export function polygonCenter(geometry: Geometry): { lat: number; lng: number } | null {
-  if (geometry.type !== "Polygon") return null;
-  const rings = geometry.coordinates as Point2[][] | undefined;
-  const ring = rings?.[0];
-  if (!ring || ring.length === 0) return null;
-  let lat = 0;
-  let lng = 0;
-  for (const point of ring) {
-    lng += point[0];
-    lat += point[1];
+/** 点と線分の距離（平面）。 */
+export function distPointSegment(p: XY, a: XY, b: XY): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return distXY(p, a);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return distXY(p, { x: a.x + t * dx, y: a.y + t * dy });
+}
+
+/** 点と折れ線の距離（平面）。 */
+export function distPointPolyline(p: XY, line: XY[]): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < line.length; i++) best = Math.min(best, distPointSegment(p, line[i - 1]!, line[i]!));
+  if (line.length === 1) best = distXY(p, line[0]!);
+  return best;
+}
+
+/** 点がリング群の内側か（偶奇則。穴は内側から除かれる）。 */
+export function pointInRings(p: XY, rings: XY[][]): boolean {
+  let inside = false;
+  for (const ring of rings) {
+    const n = ring.length;
+    for (let i = 0; i < n; i++) {
+      const a = ring[i]!;
+      const b = ring[(i + 1) % n]!;
+      if (a.y > p.y !== b.y > p.y) {
+        const xi = a.x + ((p.y - a.y) * (b.x - a.x)) / (b.y - a.y);
+        if (xi > p.x) inside = !inside;
+      }
+    }
   }
-  const n = ring.length;
-  return { lat: lat / n, lng: lng / n };
+  return inside;
 }

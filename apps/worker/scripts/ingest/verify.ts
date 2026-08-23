@@ -1,458 +1,224 @@
-// R1-R33 の出力(graph + catalog)を検査する。
-//
-// 検査項目 V1〜V17 は scratchpad/research-ingest.md §4 の表そのもの。期待値は
-// すべて既存(コミット済み)の Go 出力に対して実測した値で、Go 出力・TS 出力の
-// 両方に同じ検査をかける前提で作ってある。
-//
-// V15(決定性)と V16(手書きラベルの整合)は graph/catalog だけでは検査できない
-// (V15 は「もう一度実行した結果」、V16 は raw の marker=="entrance" ジオメトリの
-// gid 集合が要る)。呼び出し側が該当情報を渡さなければその2項目は skipped 扱いに
-// なり、全体の pass/fail には影響しない(false 扱いにしない)。
-// V17 は研究メモが明記するとおり「報告のみ、ゲートにはしない」ので常に pass=true。
+// 取り込みの検査。docs/DATA.md「検査（ingest:verify）」をそのまま機械検査にしたもの。
+// main.ts は書き出す前にこれを通し、一つでも落ちたら書き出さない。
 
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { mergeGeoms, type Catalog, type Graph } from "./build.ts";
-import { readJSON, type FeatureCollection, type ManualLabels } from "./raw.ts";
+import type { Graph } from "../../src/graph.ts";
+import { FLOOR_LABELS, type BuildCatalog, type BuildReport } from "./build.ts";
 
-export type VerifyCheck = {
+export type Check = {
   id: string;
   title: string;
   pass: boolean;
-  skipped?: boolean;
   detail: string;
 };
 
-export type VerifyContext = {
+export type VerifyInput = {
   graph: Graph;
-  catalog: Catalog;
-  /**
-   * data/labels/exits.json の内容(gid 文字列 -> {labelJa?, exclude?, confirmed?})。
-   * V16 用。省略時は V16 を skip する。
-   */
-  manualLabelKeys?: string[] | undefined;
-  /** raw の marker=="entrance" ジオメトリの gid 集合。V16 用。省略時は V16 を skip する。 */
-  entranceGids?: Set<number> | undefined;
-  /** もう一度 build() した結果。V15(決定性)用。省略時は V15 を skip する。 */
-  secondRun?: { graph: Graph; catalog: Catalog } | undefined;
+  catalog: BuildCatalog;
+  report: BuildReport;
+  /** 同じ入力でもう一度 build() したもの。V9 の決定性に使う。 */
+  secondRun: { graph: Graph; catalog: BuildCatalog };
 };
 
-export type VerifyResult = {
-  checks: VerifyCheck[];
-  allPass: boolean;
-};
+/**
+ * 改札を持つ路線。src/index.ts の CATALOG_LINES と同じ集合でなければならない
+ * （V7）。index.ts は Worker の口なのでここから import せず、集合を写す。
+ */
+export const EXPECTED_LINE_IDS = [
+  "line.jr",
+  "line.keio",
+  "line.marunouchi",
+  "line.odakyu",
+  "line.oedo",
+  "line.shinjuku",
+  "line.seibu",
+] as const;
 
-function eqSet<T>(a: Map<T, number> | Record<string, number>, expected: Record<string, number>): boolean {
-  const rec = a instanceof Map ? Object.fromEntries(a) : a;
-  const keys = new Set([...Object.keys(rec), ...Object.keys(expected)]);
-  for (const k of keys) {
-    if ((rec[k] ?? 0) !== (expected[k] ?? 0)) return false;
-  }
-  return true;
+const FLOOR_LABEL_SET = new Set(Object.values(FLOOR_LABELS));
+
+function inRange(v: number, lo: number, hi: number): boolean {
+  return v >= lo && v <= hi;
 }
 
-/** union-find。無向連結成分の判定に使う(V6/V12)。 */
-class DSU {
-  private parent = new Map<string, string>();
-  add(id: string) {
-    if (!this.parent.has(id)) this.parent.set(id, id);
+/** 向きを無視した最大連結成分のノード集合。 */
+function largestComponent(graph: Graph): Set<string> {
+  const adj = new Map<string, string[]>();
+  for (const n of graph.nodes) adj.set(n.id, []);
+  for (const l of graph.links) {
+    adj.get(l.from)!.push(l.to);
+    adj.get(l.to)!.push(l.from);
   }
-  find(id: string): string {
-    let root = id;
-    while (this.parent.get(root) !== root) root = this.parent.get(root)!;
-    let cur = id;
-    while (this.parent.get(cur) !== root) {
-      const next = this.parent.get(cur)!;
-      this.parent.set(cur, root);
-      cur = next;
-    }
-    return root;
-  }
-  union(a: string, b: string) {
-    const ra = this.find(a);
-    const rb = this.find(b);
-    if (ra !== rb) this.parent.set(ra, rb);
-  }
-}
-
-function buildComponents(graph: Graph): { root: (id: string) => string; sizes: Map<string, number> } {
-  const dsu = new DSU();
-  for (const n of graph.nodes) dsu.add(n.id);
-  for (const l of graph.links) dsu.union(l.from, l.to);
-  const sizes = new Map<string, number>();
+  const seen = new Set<string>();
+  let best = new Set<string>();
   for (const n of graph.nodes) {
-    const r = dsu.find(n.id);
-    sizes.set(r, (sizes.get(r) ?? 0) + 1);
-  }
-  return { root: (id: string) => dsu.find(id), sizes };
-}
-
-export function verify(ctx: VerifyContext): VerifyResult {
-  const { graph, catalog } = ctx;
-  const checks: VerifyCheck[] = [];
-  const push = (id: string, title: string, pass: boolean, detail: string, skipped = false) => {
-    checks.push({ id, title, pass, detail, skipped });
-  };
-
-  const nodeIds = new Set(graph.nodes.map((n) => n.id));
-
-  // V1: entries 件数・路線別。
-  {
-    const byLine: Record<string, number> = {};
-    for (const e of catalog.entries) for (const l of e.lineIds) byLine[l] = (byLine[l] ?? 0) + 1;
-    const expectedByLine = { "line.jr": 16, "line.keio": 11, "line.odakyu": 4, "line.oedo": 4, "line.marunouchi": 2 };
-    const countOk = catalog.entries.length === 34;
-    const byLineOk = eqSet(byLine, expectedByLine);
-    push(
-      "V1",
-      "entries 件数・路線別",
-      countOk && byLineOk,
-      `entries=${catalog.entries.length}(期待34) byLine=${JSON.stringify(byLine)}`,
-    );
-  }
-
-  // V2: meetings 件数と evidence。
-  {
-    const allHypothesis = catalog.meetings.every((m) => m.evidence === "hypothesis");
-    push(
-      "V2",
-      "meetings 件数と evidence",
-      catalog.meetings.length === 242 && allHypothesis,
-      `meetings=${catalog.meetings.length}(期待242) 全hypothesis=${allHypothesis}`,
-    );
-  }
-
-  // V3: exits 件数・内訳。
-  {
-    const labelNonEmpty = catalog.exits.filter((e) => e.label !== "").length;
-    const labelSourceDist: Record<string, number> = {};
-    for (const e of catalog.exits) labelSourceDist[e.labelSource] = (labelSourceDist[e.labelSource] ?? 0) + 1;
-    const evidenceDist: Record<string, number> = {};
-    for (const e of catalog.exits) evidenceDist[e.evidence] = (evidenceDist[e.evidence] ?? 0) + 1;
-    const expectedLabelSource = { tokyo: 47, manual: 18, "": 4 };
-    const expectedEvidence = { checked: 66, hypothesis: 3 };
-    const ok =
-      catalog.exits.length === 69 &&
-      labelNonEmpty === 65 &&
-      eqSet(labelSourceDist, expectedLabelSource) &&
-      eqSet(evidenceDist, expectedEvidence);
-    push(
-      "V3",
-      "exits 件数・内訳",
-      ok,
-      `exits=${catalog.exits.length}(期待69) labelあり=${labelNonEmpty}(期待65) ` +
-        `labelSource=${JSON.stringify(labelSourceDist)} evidence=${JSON.stringify(evidenceDist)}`,
-    );
-  }
-
-  // V4: destinations。
-  push("V4", "destinations", catalog.destinations.length === 4, `destinations=${catalog.destinations.length}(期待4)`);
-
-  // V5: catalog の nodeId 全存在。catalogId 全体でユニーク。
-  {
-    const withNodeId = [...catalog.entries, ...catalog.meetings, ...catalog.exits];
-    const missing = withNodeId.filter((e) => !nodeIds.has(e.nodeId));
-    const allIds = [
-      ...catalog.entries.map((e) => e.catalogId),
-      ...catalog.meetings.map((e) => e.catalogId),
-      ...catalog.exits.map((e) => e.catalogId),
-      ...catalog.destinations.map((e) => e.catalogId),
-    ];
-    const uniqueCount = new Set(allIds).size;
-    const ok = missing.length === 0 && allIds.length === 349 && uniqueCount === 349;
-    push(
-      "V5",
-      "catalog の nodeId 全存在・catalogId ユニーク",
-      ok,
-      `nodeId欠損=${missing.length} catalogId合計=${allIds.length}(期待349) ユニーク=${uniqueCount}(期待349)`,
-    );
-  }
-
-  // V6: 最大連結成分への搭載。出口は 68/69 が既知の例外(exit.28994946)。
-  {
-    const { root, sizes } = buildComponents(graph);
-    const mainRoot = [...sizes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-    const entriesIn = mainRoot ? catalog.entries.filter((e) => root(e.nodeId) === mainRoot).length : 0;
-    const meetingsIn = mainRoot ? catalog.meetings.filter((m) => root(m.nodeId) === mainRoot).length : 0;
-    const exitsIn = mainRoot ? catalog.exits.filter((e) => root(e.nodeId) === mainRoot).length : 0;
-    const exitsOutIds = mainRoot
-      ? catalog.exits.filter((e) => root(e.nodeId) !== mainRoot).map((e) => e.catalogId)
-      : [];
-    const ok =
-      entriesIn === catalog.entries.length &&
-      meetingsIn === catalog.meetings.length &&
-      exitsIn === 68 &&
-      exitsOutIds.length === 1 &&
-      exitsOutIds[0] === "exit.28994946";
-    push(
-      "V6",
-      "最大連結成分への搭載",
-      ok,
-      `entries ${entriesIn}/${catalog.entries.length} meetings ${meetingsIn}/${catalog.meetings.length} ` +
-        `exits ${exitsIn}/${catalog.exits.length}(孤立=${JSON.stringify(exitsOutIds)})`,
-    );
-  }
-
-  // V7: 出口の階。
-  {
-    const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
-    const not1F = catalog.exits.filter((e) => nodeById.get(e.nodeId)?.floorLabel !== "1F");
-    push("V7", "出口の階(全て1F)", not1F.length === 0, `1F以外=${not1F.length}件`);
-  }
-
-  // V8: グラフ規模。base link id ごとに .f/.r の有無を見て、元の d の分布を復元する。
-  {
-    const uniqueNodeIds = new Set(graph.nodes.map((n) => n.id));
-    const dCount = { 1: 0, 2: 0, 3: 0 };
-    const groups = new Map<string, Set<string>>();
-    for (const l of graph.links) {
-      const dot = l.id.lastIndexOf(".");
-      const base = l.id.slice(0, dot);
-      const suf = l.id.slice(dot + 1);
-      let set = groups.get(base);
-      if (!set) {
-        set = new Set();
-        groups.set(base, set);
+    if (seen.has(n.id)) continue;
+    const comp = new Set<string>([n.id]);
+    const stack = [n.id];
+    seen.add(n.id);
+    while (stack.length > 0) {
+      const u = stack.pop()!;
+      for (const v of adj.get(u) ?? []) {
+        if (seen.has(v)) continue;
+        seen.add(v);
+        comp.add(v);
+        stack.push(v);
       }
-      set.add(suf);
     }
-    let malformed = 0;
-    for (const set of groups.values()) {
-      if (set.size === 2 && set.has("f") && set.has("r")) dCount[3]++;
-      else if (set.size === 1 && set.has("f")) dCount[1]++;
-      else if (set.size === 1 && set.has("r")) dCount[2]++;
-      else malformed++;
-    }
-    const identity = 2 * dCount[3] + dCount[2] + dCount[1] === graph.links.length;
-    const ok =
-      uniqueNodeIds.size === graph.nodes.length &&
-      graph.nodes.length === 2506 &&
-      graph.links.length === 5288 &&
-      malformed === 0 &&
-      identity &&
-      dCount[3] === 2635 &&
-      dCount[2] === 12 &&
-      dCount[1] === 6;
-    push(
-      "V8",
-      "グラフ規模",
-      ok,
-      `nodes=${graph.nodes.length}(期待2506,unique=${uniqueNodeIds.size}) links=${graph.links.length}(期待5288) ` +
-        `d分布(復元)=${JSON.stringify(dCount)}(期待{3:2635,2:12,1:6}) malformed=${malformed}`,
-    );
+    if (comp.size > best.size) best = comp;
   }
-
-  // V9: リンク健全性。
-  {
-    const badEndpoint = graph.links.filter((l) => !nodeIds.has(l.from) || !nodeIds.has(l.to));
-    const negative = graph.links.filter((l) => l.distanceM < 0);
-    const zero = graph.links.filter((l) => l.distanceM === 0);
-    const ok = badEndpoint.length === 0 && negative.length === 0 && zero.length === 16;
-    push(
-      "V9",
-      "リンク健全性",
-      ok,
-      `端点欠損=${badEndpoint.length} distanceM<0=${negative.length} distanceM==0=${zero.length}(期待16)`,
-    );
-  }
-
-  // V10: 縦移動の整合。
-  {
-    const inconsistent = graph.links.filter((l) => (l.deltaZ !== 0) !== (l.vertical !== "none"));
-    const dist: Record<string, number> = {};
-    for (const l of graph.links) dist[l.vertical] = (dist[l.vertical] ?? 0) + 1;
-    const expected = { none: 4814, stairs: 252, escalator: 140, elevator: 80, unknown: 2 };
-    const ok = inconsistent.length === 0 && eqSet(dist, expected);
-    push(
-      "V10",
-      "縦移動の整合",
-      ok,
-      `不整合=${inconsistent.length}件 分布=${JSON.stringify(dist)}(期待${JSON.stringify(expected)})`,
-    );
-  }
-
-  // V11: hours。
-  {
-    const nonNull = graph.links.filter((l) => l.hours !== null).length;
-    push("V11", "hours は全リンク null", nonNull === 0, `非null=${nonNull}件`);
-  }
-
-  // V12: 孤立・連結成分。
-  {
-    const { sizes } = buildComponents(graph);
-    const sizeList = [...sizes.values()];
-    const isolated = sizeList.filter((s) => s === 1).length;
-    const largest = Math.max(...sizeList);
-    const ok = isolated === 1 && sizes.size === 7 && largest === 2346;
-    push(
-      "V12",
-      "孤立・連結成分",
-      ok,
-      `孤立=${isolated}(期待1) 成分数=${sizes.size}(期待7) 最大=${largest}(期待2346,${((largest / graph.nodes.length) * 100).toFixed(1)}%)`,
-    );
-  }
-
-  // V13: 位置なしノード。
-  {
-    const zeroXY = graph.nodes.filter((n) => n.x === 0 && n.y === 0).length;
-    push("V13", "位置なしノード(x==0&&y==0)", zeroXY === 276, `x==0&&y==0=${zeroXY}件(期待276)`);
-  }
-
-  // V14: ソート順。
-  {
-    const entryIds = catalog.entries.map((e) => e.catalogId);
-    const entrySorted = entryIds.every((id, i) => i === 0 || entryIds[i - 1]! <= id);
-    const meetingIds = catalog.meetings.map((m) => m.nodeId);
-    const meetingSorted = meetingIds.every((id, i) => i === 0 || meetingIds[i - 1]! <= id);
-    const meetingUnique = new Set(meetingIds).size === meetingIds.length;
-    const exitIds = catalog.exits.map((e) => e.nodeId);
-    const exitSorted = exitIds.every((id, i) => i === 0 || exitIds[i - 1]! <= id);
-    const exitUnique = new Set(exitIds).size === exitIds.length;
-    const ok = entrySorted && meetingSorted && meetingUnique && exitSorted && exitUnique;
-    push(
-      "V14",
-      "ソート順",
-      ok,
-      `entries昇順=${entrySorted} meetings昇順=${meetingSorted}(unique=${meetingUnique}) exits昇順=${exitSorted}(unique=${exitUnique})`,
-    );
-  }
-
-  // V15: 決定性。secondRun が渡された場合のみ検査する。
-  if (ctx.secondRun) {
-    const a = JSON.stringify(graph) + " " + JSON.stringify(catalog);
-    const b = JSON.stringify(ctx.secondRun.graph) + " " + JSON.stringify(ctx.secondRun.catalog);
-    push("V15", "決定性(2回実行してバイト一致)", a === b, a === b ? "一致" : "不一致");
-  } else {
-    push("V15", "決定性(2回実行してバイト一致)", true, "secondRun 未指定のため skip", true);
-  }
-
-  // V16: 手書きラベルの整合。entranceGids/manualLabelKeys が渡された場合のみ検査する。
-  if (ctx.entranceGids && ctx.manualLabelKeys) {
-    const stray = ctx.manualLabelKeys.filter((k) => !ctx.entranceGids!.has(Number(k)));
-    push(
-      "V16",
-      "手書きラベルの整合(exits.json の全キーが marker==entrance の gid)",
-      stray.length === 0,
-      stray.length === 0
-        ? `manualLabels=${ctx.manualLabelKeys.length}件、全てentranceのgidに一致`
-        : `entranceに存在しないキー: ${stray.slice(0, 20).join(", ")}`,
-    );
-  } else {
-    push(
-      "V16",
-      "手書きラベルの整合(exits.json の全キーが marker==entrance の gid)",
-      true,
-      "entranceGids/manualLabelKeys 未指定のため skip",
-      true,
-    );
-  }
-
-  // V17: 報告のみ。ゲートにはしない(常に pass=true)。
-  {
-    const dist: Record<string, number> = {};
-    for (const m of catalog.meetings) dist[String(m.explainability)] = (dist[String(m.explainability)] ?? 0) + 1;
-    push(
-      "V17",
-      "(報告のみ) explainability 分布ほか",
-      true,
-      `explainability分布=${JSON.stringify(dist)}(期待{"1":232,"2":7,"4":2,"5":1})`,
-    );
-  }
-
-  // V18: 集合候補ごとの近くの設備(elevatorM/restroomM)。Go 版には無い新規機能
-  // (docs/RECOMMENDER.md「近くの設備は取り込みで測る」)。件数と値域を固定する。
-  // 期待値は実行して得た実測値をそのまま固定したもの(このタスクの受け入れ条件)。
-  {
-    const elevatorValues = catalog.meetings.map((m) => m.elevatorM);
-    const restroomValues = catalog.meetings.map((m) => m.restroomM);
-    const elevatorNonNull = elevatorValues.filter((v) => v !== null).length;
-    const restroomNonNull = restroomValues.filter((v) => v !== null).length;
-    const elevatorNull = elevatorValues.length - elevatorNonNull;
-    const restroomNull = restroomValues.length - restroomNonNull;
-    const negative = [...elevatorValues, ...restroomValues].filter((v) => v !== null && v < 0).length;
-    const ok =
-      catalog.meetings.length === 242 &&
-      elevatorNonNull === 242 &&
-      elevatorNull === 0 &&
-      restroomNonNull === 242 &&
-      restroomNull === 0 &&
-      negative === 0;
-    push(
-      "V18",
-      "設備距離(elevatorM/restroomM)の件数と値域",
-      ok,
-      `elevator: 値あり=${elevatorNonNull}(期待242) null=${elevatorNull}(期待0) / ` +
-        `restroom: 値あり=${restroomNonNull}(期待242) null=${restroomNull}(期待0) / ` +
-        `負値=${negative}件(期待0)`,
-    );
-  }
-
-  const allPass = checks.every((c) => c.skipped || c.pass);
-  return { checks, allPass };
+  return best;
 }
 
-// ------------------------------------------------------------ CLI
-//
-// `node scripts/ingest/verify.ts --dir <graph.json/catalog.jsonのあるディレクトリ>
-//   [--raw <geojson-level-geom-*.geojsonのあるディレクトリ>] [--labels <exits.json>]`
-//
-// build() を経由しない、コミット済み出力(や別実行の出力)に対する単独検査。
-// --raw/--labels を渡すと V16 も検査する(marker=="entrance" の gid 集合が要るため)。
-// V15(決定性)は単一ディレクトリの検査なので対象外(skip のまま)。
+export function verify(input: VerifyInput): { checks: Check[]; allPass: boolean } {
+  const { graph, catalog, report } = input;
+  const checks: Check[] = [];
+  const add = (id: string, title: string, pass: boolean, detail: string) => checks.push({ id, title, pass, detail });
 
-function parseCliArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a?.startsWith("--")) continue;
-    const key = a.slice(2);
-    const value = argv[i + 1];
-    if (value === undefined) throw new Error(`--${key} には値が必要`);
-    out[key] = value;
-    i++;
-  }
-  return out;
-}
+  // V1 件数
+  const counts = {
+    nodes: graph.nodes.length,
+    links: graph.links.length,
+    entries: catalog.entries.length,
+    meetings: catalog.meetings.length,
+    exits: catalog.exits.length,
+  };
+  add(
+    "V1",
+    "件数が docs/DATA.md の範囲にある",
+    inRange(counts.nodes, 1900, 2100) &&
+      inRange(counts.links, 4700, 5200) &&
+      inRange(counts.entries, 30, 60) &&
+      inRange(counts.meetings, 200, 420) &&
+      inRange(counts.exits, 90, 200),
+    JSON.stringify(counts),
+  );
 
-function runCli() {
-  const args = parseCliArgs(process.argv.slice(2));
-  if (!args.dir) {
-    console.error("使い方: node scripts/ingest/verify.ts --dir <graph.json/catalog.jsonのあるディレクトリ> [--raw <dir>] [--labels <file>]");
-    process.exit(2);
-  }
-  const dir = resolve(process.cwd(), args.dir);
-  const graph = JSON.parse(readFileSync(join(dir, "graph.json"), "utf8")) as Graph;
-  const catalog = JSON.parse(readFileSync(join(dir, "catalog.json"), "utf8")) as Catalog;
+  // V2 連結
+  const nodeIds = new Set(graph.nodes.map((n) => n.id));
+  const big = largestComponent(graph);
+  const entriesOut = catalog.entries.filter((e) => !big.has(e.nodeId)).map((e) => e.nameJa);
+  const meetingsOut = catalog.meetings.filter((m) => !big.has(m.nodeId)).map((m) => m.nameJa);
+  const exitsOut = catalog.exits.filter((e) => !big.has(e.nodeId)).map((e) => e.nameJa);
+  add(
+    "V2",
+    "最大連結成分に改札・集合候補・出口の全件がある",
+    entriesOut.length === 0 && meetingsOut.length === 0 && exitsOut.length === 0,
+    `成分 ${big.size}/${graph.nodes.length}。外れた改札 ${entriesOut.length}、集合候補 ${meetingsOut.length}、出口 ${exitsOut.length}` +
+      (entriesOut.length + meetingsOut.length + exitsOut.length > 0
+        ? `: ${[...entriesOut, ...meetingsOut, ...exitsOut].slice(0, 10).join(" / ")}`
+        : ""),
+  );
 
-  let entranceGids: Set<number> | undefined;
-  let manualLabelKeys: string[] | undefined;
-  if (args.raw) {
-    const rawDir = resolve(process.cwd(), args.raw);
-    const files = readdirSync(rawDir)
-      .filter((f) => f.startsWith("geojson-level-geom-") && f.endsWith(".geojson"))
-      .sort();
-    const featureCollections = files.map((f) => readJSON<FeatureCollection>(join(rawDir, f)));
-    const geoms = mergeGeoms(featureCollections);
-    entranceGids = new Set<number>();
-    for (const [gid, f] of geoms) {
-      if (f.properties.marker === "entrance") entranceGids.add(gid);
-    }
-  }
-  if (args.labels) {
-    const manualLabels = JSON.parse(readFileSync(resolve(process.cwd(), args.labels), "utf8")) as ManualLabels;
-    manualLabelKeys = Object.keys(manualLabels);
-  }
+  // V3 改札
+  add(
+    "V3",
+    "gates.json の改札すべてにノードが結べた",
+    report.gatesUnresolved.length === 0,
+    report.gatesUnresolved.length === 0
+      ? `${counts.entries} 件。10m まで寄せたもの ${report.gatesSnapped.length}: ${report.gatesSnapped.join(" / ") || "なし"}`
+      : report.gatesUnresolved.join(" / "),
+  );
 
-  const result = verify({ graph, catalog, entranceGids, manualLabelKeys });
-  for (const c of result.checks) {
-    const mark = c.skipped ? "SKIP" : c.pass ? "PASS" : "FAIL";
-    console.log(`[verify ${mark}] ${c.id} ${c.title} — ${c.detail}`);
-  }
-  console.log(result.allPass ? "\nverify: PASS" : "\nverify: FAIL");
-  if (!result.allPass) process.exit(1);
-}
+  // V4 出口の解決（報告のみ）
+  add(
+    "V4",
+    "出口 POI の解決（落とさない）",
+    true,
+    `看板にノードが無い ${report.exitsNoNode.length}${report.exitsNoNode.length > 0 ? ` (${report.exitsNoNode.join(" / ")})` : ""}、` +
+      `屋外ノードへ解けず看板の座標 ${report.exitsNoOutdoor.length}${report.exitsNoOutdoor.length > 0 ? ` (${report.exitsNoOutdoor.join(" / ")})` : ""}、` +
+      `地上と地下の重複 ${report.exitsTwinDropped}、閉鎖中 ${report.exitsClosed.length}、境界ノードの無名出口 ${report.boundaryExits}`,
+  );
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runCli();
+  // V5 東京都の名前の寄せ（報告のみ）
+  const sorted = [...report.snapDistancesM].sort((a, b) => a - b);
+  const median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)]! : 0;
+  add(
+    "V5",
+    "名前をノードへ寄せた距離（落とさない）",
+    true,
+    `中央値 ${median.toFixed(1)}m、最大 ${(sorted[sorted.length - 1] ?? 0).toFixed(1)}m、40m 以内に無くて外した ${report.unsnapped.length}` +
+      (report.unsnapped.length > 0 ? ` (${report.unsnapped.slice(0, 10).join(" / ")})` : "") +
+      `、階の表に無い ${report.tokyoNoLevel.length}、表の先頭に落とした ${report.tokyoLevelFallback}`,
+  );
+
+  // V6 重複と閉鎖
+  const names = new Map<string, number>();
+  for (const m of catalog.meetings) names.set(m.nameJa, (names.get(m.nameJa) ?? 0) + 1);
+  const dupNames = [...names.entries()].filter(([, c]) => c > 1).map(([n]) => n);
+  const closed = catalog.exits.filter((e) => e.label.includes("閉鎖")).map((e) => e.label);
+  add(
+    "V6",
+    "同じ名前の集合候補が無く、閉鎖中の出口が無い",
+    dupNames.length === 0 && closed.length === 0,
+    `重複 ${dupNames.length}${dupNames.length > 0 ? ` (${dupNames.join(" / ")})` : ""}、閉鎖中 ${closed.length}`,
+  );
+
+  // V7 路線
+  const lineSet = new Set<string>();
+  for (const e of catalog.entries) for (const l of e.lineIds) lineSet.add(l);
+  const expected = new Set<string>(EXPECTED_LINE_IDS);
+  const missing = [...expected].filter((l) => !lineSet.has(l));
+  const extra = [...lineSet].filter((l) => !expected.has(l));
+  add(
+    "V7",
+    "改札の路線と CATALOG_LINES が一致する",
+    missing.length === 0 && extra.length === 0,
+    `改札の無い路線 ${missing.join(",") || "なし"}、一覧に無い路線 ${extra.join(",") || "なし"}`,
+  );
+
+  // V8 階名
+  const badFloors = graph.nodes.filter((n) => n.floorLabel === null || !FLOOR_LABEL_SET.has(n.floorLabel)).length;
+  add("V8", "floorLabel が固定表の値だけ", badFloors === 0, `表に無いもの ${badFloors}。内訳 ${JSON.stringify(report.floorLabels)}`);
+
+  // V9 決定性
+  const same =
+    JSON.stringify(graph) === JSON.stringify(input.secondRun.graph) &&
+    JSON.stringify(catalog) === JSON.stringify(input.secondRun.catalog);
+  add("V9", "二回 build してバイト一致", same, same ? "一致" : "不一致");
+
+  // V10 リンクの整合
+  const badLinks = graph.links.filter((l) => !nodeIds.has(l.from) || !nodeIds.has(l.to) || l.from === l.to || !(l.distanceM > 0)).length;
+  add(
+    "V10",
+    "全リンクの端点がノードにあり、自己ループと非正の距離が無い",
+    badLinks === 0,
+    `不正 ${badLinks}。落とした端点欠けリンク ${report.droppedDanglingLinks.length}`,
+  );
+
+  // V11 出口の座標
+  const bbox = { minLat: 35.68, maxLat: 35.70, minLng: 139.69, maxLng: 139.71 };
+  const badExit = catalog.exits.filter(
+    (e) => !(e.lat >= bbox.minLat && e.lat <= bbox.maxLat && e.lng >= bbox.minLng && e.lng <= bbox.maxLng),
+  ).length;
+  add("V11", "出口の緯度経度が新宿駅の範囲にある", badExit === 0, `範囲外 ${badExit}`);
+
+  // V12 縦移動
+  const v = report.verticalCounts;
+  add(
+    "V12",
+    "縦移動の種別がリンク属性から取れている",
+    (v.stairs ?? 0) >= 150 && (v.escalator ?? 0) >= 50 && (v.elevator ?? 0) >= 50,
+    JSON.stringify(v),
+  );
+
+  // V13 カタログの参照
+  const badRefs = [
+    ...catalog.entries.filter((e) => !nodeIds.has(e.nodeId)).map((e) => e.catalogId),
+    ...catalog.meetings.filter((m) => !nodeIds.has(m.nodeId)).map((m) => m.catalogId ?? ""),
+    ...catalog.exits.filter((e) => !nodeIds.has(e.nodeId)).map((e) => e.catalogId),
+  ];
+  const ids = [
+    ...catalog.entries.map((e) => e.catalogId),
+    ...catalog.meetings.map((m) => m.catalogId ?? ""),
+    ...catalog.exits.map((e) => e.catalogId),
+    ...catalog.destinations.map((d) => d.catalogId),
+  ];
+  const dupIds = ids.filter((id, i) => ids.indexOf(id) !== i);
+  add(
+    "V13",
+    "カタログのノード参照が全部グラフにあり、catalogId が一意",
+    badRefs.length === 0 && dupIds.length === 0,
+    `欠け ${badRefs.length}、重複 ${dupIds.length}${dupIds.length > 0 ? ` (${dupIds.slice(0, 5).join(",")})` : ""}`,
+  );
+
+  return { checks, allPass: checks.every((c) => c.pass) };
 }

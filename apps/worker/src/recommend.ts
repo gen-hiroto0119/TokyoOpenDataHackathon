@@ -1,6 +1,8 @@
 import type {
   Accessibility,
   ConfirmationPoint,
+  Landmark,
+  LandmarkKind,
   Leg,
   MeetingCandidate,
   RecommendationRequest,
@@ -760,7 +762,14 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
   const scored: Scored[] = [];
   const infeasible: RecommendationResponse["infeasible"] = [];
 
+  // 同じノードに寄った名前は順位には一つだけ出す（docs/RECOMMENDER.md「集合候補の選び方」）。
+  // 隣り合う店が同じ通路のノードに寄るので、全部並べると同じ距離・同じ出口の行が名前だけ
+  // 変わって続く。カタログは nodeId → catalogId の順に並んでいるので、最初の一つが決まる。
+  const seenMeetingNodes = new Set<string>();
+
   for (const meeting of catalog.meetings) {
+    if (seenMeetingNodes.has(meeting.nodeId)) continue;
+    seenMeetingNodes.add(meeting.nodeId);
     const node = nodes.get(meeting.nodeId);
     if (!node) {
       throw new RecommendError("unknown_node", "集合候補がグラフにありません", {
@@ -954,4 +963,80 @@ export function recommend(dataset: Dataset, request: RecommendationRequest): Rec
     ranked,
     infeasible,
   };
+}
+
+// ---------------------------------------------------------------- GET /v1/landmarks
+
+/** `radiusM` の既定値。docs/RECOMMENDER.md「GET /v1/landmarks」。 */
+export const DEFAULT_LANDMARKS_RADIUS_M = 150;
+/** `limit` の既定値。 */
+export const DEFAULT_LANDMARKS_LIMIT = 20;
+
+/** `?radiusM` を読む。無い・数でない・0 以下のときは既定値にする(parseRoomRecommendationsLimit と同じ流儀)。 */
+export function parseLandmarksRadiusM(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_LANDMARKS_RADIUS_M;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_LANDMARKS_RADIUS_M;
+  return n;
+}
+
+/** `?limit` を読む。無い・数でない・0 以下のときは既定値にする。 */
+export function parseLandmarksLimit(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_LANDMARKS_LIMIT;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return DEFAULT_LANDMARKS_LIMIT;
+  return n;
+}
+
+/**
+ * 起点から近い、名前のある地点(改札・集合候補・出口)。画面7「いまいる場所」が使う。
+ *
+ * 起点から順方向に Dijkstra を 1 回だけ回し、カタログの entries/meetings/exits の
+ * ノードだけを拾う。通路の無名ノードは返さない — 着いても合っているか現地で
+ * 確かめようがない(docs/RECOMMENDER.md「GET /v1/landmarks」)。制約(段差なし・
+ * 時間帯)は掛けない。ここでの目的は「近くに何があるか」であって、
+ * 通行可能な経路の計算ではない。
+ */
+export function nearbyLandmarks(
+  dataset: Dataset,
+  nearNodeId: string,
+  radiusM: number,
+  limit: number,
+): Landmark[] {
+  const { graph, catalog } = dataset;
+  const nodes = indexNodes(graph);
+  if (!nodes.has(nearNodeId)) {
+    throw new RecommendError("unknown_node", "起点がグラフにありません", { nodeId: nearNodeId });
+  }
+
+  const links = indexLinks(graph);
+  const adjacency = buildAdjacency(graph);
+  const reached = shortestFrom([nearNodeId], adjacency, links, { accessibility: "any", asOf: null });
+
+  type Candidate = { nodeId: string; nameJa: string; kind: LandmarkKind; distanceM: number };
+  const candidates: Candidate[] = [];
+  const seen = new Set<string>();
+  const add = (nodeId: string, nameJa: string, kind: LandmarkKind) => {
+    if (seen.has(nodeId)) return;
+    const r = reached.get(nodeId);
+    if (!r || r.distanceM > radiusM + EPS) return;
+    seen.add(nodeId);
+    candidates.push({ nodeId, nameJa, kind, distanceM: r.distanceM });
+  };
+  for (const e of catalog.entries) add(e.nodeId, e.nameJa, "gate");
+  for (const m of catalog.meetings) add(m.nodeId, m.nameJa, "meeting");
+  for (const x of catalog.exits) add(x.nodeId, x.nameJa, "exit");
+
+  candidates.sort((a, b) => {
+    if (Math.abs(a.distanceM - b.distanceM) > EPS) return a.distanceM - b.distanceM;
+    return a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0;
+  });
+
+  return candidates.slice(0, limit).map((c) => ({
+    nodeId: c.nodeId,
+    nameJa: c.nameJa,
+    kind: c.kind,
+    floorLabel: nodes.get(c.nodeId)?.floorLabel ?? null,
+    distanceM: c.distanceM,
+  }));
 }

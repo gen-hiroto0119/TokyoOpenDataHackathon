@@ -57,8 +57,6 @@ const LINK_SPECS: LinkSpec[] = [
 function buildGraph(): Graph {
   const nodes: GraphNode[] = NODE_SPECS.map(([id, x, y, nameJa, floorLabel]) => ({
     id,
-    levelIds: [floorLabel],
-    geomIds: [],
     nameJa,
     floorLabel,
     x,

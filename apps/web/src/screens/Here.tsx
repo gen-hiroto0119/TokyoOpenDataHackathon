@@ -10,23 +10,31 @@ import { Icon } from "../components/Icon.js";
 import { Permission } from "../components/Permission.js";
 import { SearchResult } from "../components/SearchResult.js";
 import { Sheet } from "../components/Sheet.js";
+import { Status } from "../components/Status.js";
 import type { HereRow } from "../route-view.js";
 
 export type HereKind = "Default" | "List" | "Ask" | "Denied";
 
 export type HereProps = {
   Kind?: HereKind;
-  /** 自分の leg の確認点(confirmations)。経路順。 */
+  /** 近くの名前のある地点(GET /v1/landmarks)。距離の近い順。 */
   rows?: readonly HereRow[];
+  /** landmarks を取得中。 */
+  loading?: boolean;
+  /** landmarks の取得に失敗した。 */
+  loadError?: boolean;
   /** 送信中は行のタップを受け付けない。 */
   busy?: boolean;
-  /** 直前の送信が失敗した。 */
+  /** 直前の確認の送信が失敗した。 */
   error?: boolean;
   onBack?: () => void;
   onAllow?: () => void;
   onPickList?: () => void;
   onConfirm?: (nodeId: string) => void;
+  /** 直前の確認の再送信。 */
   onRetry?: () => void;
+  /** landmarks の取得をやり直す。 */
+  onRetryLoad?: () => void;
 };
 
 type PlaceRow = {
@@ -55,9 +63,9 @@ const reading: readonly PlaceRow[] = [
 
 /** Storybook / props 未指定時のフォールバック。実データは RoomPage が渡す。 */
 const DEFAULT_ROWS: readonly HereRow[] = [
-  { nodeId: "gate", nameJa: "丸ノ内線改札", detailJa: "改札" },
-  { nodeId: "branch", nameJa: "中央通路との合流点", detailJa: "分岐" },
-  { nodeId: "meeting", nameJa: "西口交番前", detailJa: "集合場所" },
+  { nodeId: "gate", nameJa: "丸ノ内線改札", detailJa: "B1", distanceJa: "20m" },
+  { nodeId: "board", nameJa: "B1 案内板前", detailJa: "B1", distanceJa: "35m" },
+  { nodeId: "meeting", nameJa: "西口交番前", detailJa: "B1", distanceJa: "80m" },
 ];
 
 const styles = stylex.create({
@@ -174,12 +182,8 @@ function places(rows: readonly PlaceRow[]) {
   );
 }
 
-/** 確認点(confirmations)の一覧。通過済みも選び直せるよう選択可能のまま出す。 */
-function confirmationPlaces(
-  rows: readonly HereRow[],
-  busy: boolean,
-  onConfirm?: (nodeId: string) => void,
-) {
+/** 近くの地点(GET /v1/landmarks)の一覧。距離の近い順。 */
+function landmarkPlaces(rows: readonly HereRow[], busy: boolean, onConfirm?: (nodeId: string) => void) {
   return (
     <div className={stylexClassName(styles.places)}>
       {rows.map((row) => (
@@ -187,7 +191,7 @@ function confirmationPlaces(
           <SearchResult
             Name={row.nameJa}
             Detail={row.detailJa}
-            Distance=""
+            Distance={row.distanceJa}
             Photo="Hidden"
             onClick={busy ? undefined : () => onConfirm?.(row.nodeId)}
           />
@@ -212,15 +216,50 @@ function chip(Kind: HereKind) {
   }
 }
 
+function listBody(
+  rows: readonly HereRow[],
+  loading: boolean,
+  loadError: boolean,
+  busy: boolean,
+  onConfirm?: (nodeId: string) => void,
+  onRetryLoad?: () => void,
+) {
+  if (loading) {
+    return (
+      <div className={stylexClassName(styles.action)}>
+        <Status State="Progress" />
+      </div>
+    );
+  }
+  if (loadError) {
+    return (
+      <div className={stylexClassName(styles.action)}>
+        <ErrorNotice onRetry={onRetryLoad} />
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div className={stylexClassName(styles.action)}>
+        <Status State="Failed" onRetry={onRetryLoad} />
+      </div>
+    );
+  }
+  return landmarkPlaces(rows, busy, onConfirm);
+}
+
 function panel(
   Kind: HereKind,
   rows: readonly HereRow[],
+  loading: boolean,
+  loadError: boolean,
   busy: boolean,
   error: boolean,
   onAllow?: () => void,
   onPickList?: () => void,
   onConfirm?: (nodeId: string) => void,
   onRetry?: () => void,
+  onRetryLoad?: () => void,
 ) {
   switch (Kind) {
     case "Default":
@@ -238,7 +277,7 @@ function panel(
       return (
         <div className={stylexClassName(styles.sheet)}>
           <Sheet Height="Full">
-            {confirmationPlaces(rows, busy, onConfirm)}
+            {listBody(rows, loading, loadError, busy, onConfirm, onRetryLoad)}
             {error ? (
               <div className={stylexClassName(styles.action)}>
                 <ErrorNotice onRetry={onRetry} />
@@ -269,6 +308,8 @@ function panel(
 export function Here({
   Kind = "Default",
   rows = DEFAULT_ROWS,
+  loading = false,
+  loadError = false,
   busy = false,
   error = false,
   onBack,
@@ -276,6 +317,7 @@ export function Here({
   onPickList,
   onConfirm,
   onRetry,
+  onRetryLoad,
 }: HereProps) {
   return (
     <div className={stylexClassName(styles.root)}>
@@ -284,7 +326,7 @@ export function Here({
         <Icon Name="Back" />
       </BaseButton>
       {chip(Kind)}
-      {panel(Kind, rows, busy, error, onAllow, onPickList, onConfirm, onRetry)}
+      {panel(Kind, rows, loading, loadError, busy, error, onAllow, onPickList, onConfirm, onRetry, onRetryLoad)}
     </div>
   );
 }

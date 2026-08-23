@@ -1,5 +1,4 @@
-// docs/RECOMMENDER.md の HTTP 契約。
-// ここが正本ではない。docs を直してからここを直す。
+// HTTP の入出力の型。
 
 import * as v from "valibot";
 
@@ -37,8 +36,7 @@ export type RecommendationRequest = {
 // ---------------------------------------------------------------- 入力検証
 //
 // POST /v1/recommendations の入力を Valibot で検証する（room.ts と同じやり方）。
-// ここは docs が正本の型が先にあるので、スキーマを手で型に合わせて書く
-// （room.ts とは逆で、型からスキーマを導いてはいない）。
+// スキーマを手で型に合わせて書く（room.ts とは逆で、型からスキーマを導いてはいない）。
 
 const LineRefSchema = v.object({
   kind: v.literal("line", "到着情報が読めません"),
@@ -253,6 +251,20 @@ export type RecommendationResponse = {
   ranked: MeetingCandidate[];
   infeasible: { nodeId: string; nameJa: string; reason: ReasonCode; textJa: string }[];
 };
+
+/** GET /v1/landmarks。画面7「いまいる場所」が使う、近くの名前のある地点。 */
+export type LandmarkKind = "gate" | "meeting" | "exit";
+
+export type Landmark = {
+  nodeId: string;
+  nameJa: string;
+  kind: LandmarkKind;
+  floorLabel: string | null;
+  /** near から歩いた距離。丸めない(表示側で丸める)。 */
+  distanceM: number;
+};
+
+export type LandmarksResponse = { landmarks: Landmark[] };
 
 export type ErrorCode =
   | "invalid_request"

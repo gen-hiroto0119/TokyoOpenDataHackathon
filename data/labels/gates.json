@@ -1,0 +1,265 @@
+{
+  "6359b61774eb4abfb111b2c4bb455df0": {
+    "nameJa": "大江戸線新宿西口駅 小滝橋通り方面改札",
+    "lineIds": [
+      "line.oedo"
+    ],
+    "source": "10.都営新宿西口駅 B3 小滝橋通り方面改札"
+  },
+  "241abb334bc84dccb82ad5eae8254670": {
+    "nameJa": "大江戸線新宿西口駅 JR新宿駅方面改札",
+    "lineIds": [
+      "line.oedo"
+    ],
+    "source": "10.都営新宿西口駅 B3 ＪＲ新宿駅方面改札"
+  },
+  "073f68bdeacd4cbfb84edf2c5af25f59": {
+    "nameJa": "丸ノ内線 西改札",
+    "lineIds": [
+      "line.marunouchi"
+    ],
+    "source": "5.東京メトロ新宿駅 B2 西改札"
+  },
+  "b161d890fd094676b7fb0ea2c46123f2": {
+    "nameJa": "丸ノ内線 西改札",
+    "lineIds": [
+      "line.marunouchi"
+    ],
+    "source": "5.東京メトロ新宿駅 B2 西改札"
+  },
+  "987143aae7814d658f6e9bd87eac83cb": {
+    "nameJa": "丸ノ内線 西改札",
+    "lineIds": [
+      "line.marunouchi"
+    ],
+    "source": "5.東京メトロ新宿駅 B2 西改札"
+  },
+  "d7921734cd9e407d8e817dca3e477802": {
+    "nameJa": "丸ノ内線 西改札",
+    "lineIds": [
+      "line.marunouchi"
+    ],
+    "source": "5.東京メトロ新宿駅 B2 西改札"
+  },
+  "fcd6daa20e1f44259a7ed458e328b61f": {
+    "nameJa": "丸ノ内線 西改札",
+    "lineIds": [
+      "line.marunouchi"
+    ],
+    "source": "5.東京メトロ新宿駅 B2 西改札"
+  },
+  "a1ab520391ac4317b0b77f5e47774cad": {
+    "nameJa": "丸ノ内線 東改札",
+    "lineIds": [
+      "line.marunouchi"
+    ],
+    "source": "5.東京メトロ新宿駅 B2 東改札"
+  },
+  "d31f36f1150f4b589b7a620b6de9cda9": {
+    "nameJa": "丸ノ内線 東改札",
+    "lineIds": [
+      "line.marunouchi"
+    ],
+    "source": "5.東京メトロ新宿駅 B2 東改札"
+  },
+  "859339e2edb34154ab855d672743bbe4": {
+    "nameJa": "JR中央西口",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "1.JR新宿駅改札 B1 JR中央西口"
+  },
+  "fb611b1f7af24e518744b448f9657036": {
+    "nameJa": "JR 中央東改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "3.JR新宿駅 B1 中央東改札"
+  },
+  "7be0b976ae3546a79da40da5ec159516": {
+    "nameJa": "JR 中央東改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "3.JR新宿駅 B1 中央東改札"
+  },
+  "28e4244fffc54d69b600d7d4d64f2a1e": {
+    "nameJa": "JR 西改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "1.JR新宿駅改札 B1 西改札"
+  },
+  "5b65a4b8660c4821bdb1fc6c1a9aa9bb": {
+    "nameJa": "JR 東改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "1.JR新宿駅改札 B1 東改札"
+  },
+  "a99751303e8b4e4cb3749b4319d75777": {
+    "nameJa": "京王線 ルミネ口",
+    "lineIds": [
+      "line.keio"
+    ],
+    "source": "4.ルミネ B1 ルミネ口"
+  },
+  "b9bd2f7edf4e444994e061cdd552af2a": {
+    "nameJa": "小田急線 西口地下改札",
+    "lineIds": [
+      "line.odakyu"
+    ],
+    "source": "6.小田急新宿駅_小田急エース B1 西口地下改札"
+  },
+  "ba728b74a336498c9fd315898fe8a40c": {
+    "nameJa": "京王新線 新都心口",
+    "lineIds": [
+      "line.keio",
+      "line.shinjuku"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 新都心口"
+  },
+  "ba7702fcb51d4b2394d6aa77c83e6380": {
+    "nameJa": "京王新線 新都心口",
+    "lineIds": [
+      "line.keio",
+      "line.shinjuku"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 新都心口"
+  },
+  "2de9de27fba84182894eff84d95661ec": {
+    "nameJa": "京王新線口",
+    "lineIds": [
+      "line.keio",
+      "line.shinjuku"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 京王新線口"
+  },
+  "4cfa3ca6050343efb45afbefd1ab61c6": {
+    "nameJa": "京王新線口",
+    "lineIds": [
+      "line.keio",
+      "line.shinjuku"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 京王新線口"
+  },
+  "39af3487f9094308b27294312a810360": {
+    "nameJa": "京王百貨店口",
+    "lineIds": [
+      "line.keio"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 京王百貨店口"
+  },
+  "888778a634fe4750b69b3d898e1c8fb5": {
+    "nameJa": "京王西口",
+    "lineIds": [
+      "line.keio"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 京王西口"
+  },
+  "b41e1995deac49bb9c9bcf103c97e1bd": {
+    "nameJa": "京王西口",
+    "lineIds": [
+      "line.keio"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 京王西口"
+  },
+  "8d3dc24aebe44c2396997dd6e3a54621": {
+    "nameJa": "京王線 広場口",
+    "lineIds": [
+      "line.keio"
+    ],
+    "source": "7.京王新宿駅_京王モールアネックス B1 広場口"
+  },
+  "ab153fadbd4947469c1685275cb74622": {
+    "nameJa": "大江戸線新宿駅 改札B",
+    "lineIds": [
+      "line.oedo"
+    ],
+    "source": "9.都営新宿駅 B1 大江戸線改札B"
+  },
+  "f7ec73273c3e45c3835bff65f7c5cbfd": {
+    "nameJa": "JR 西改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "1.JR新宿駅改札 B1 西改札"
+  },
+  "25a8f8b9270a46c2b5d89edae24090e6": {
+    "nameJa": "小田急線 西口地上改札",
+    "lineIds": [
+      "line.odakyu"
+    ],
+    "source": "6.小田急新宿駅_小田急エース 1 西口地上改札"
+  },
+  "59da841748574ff1bdc9408b504e3b85": {
+    "nameJa": "西武新宿駅 中央改札",
+    "lineIds": [
+      "line.seibu"
+    ],
+    "source": "12.西武新宿駅 2 中央改札"
+  },
+  "7ddd0753b79a412e94d800329ef1805f": {
+    "nameJa": "JR 東南改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "3.JR新宿駅 2 東南改札"
+  },
+  "08a0d506192a4c1e9e4a3ae532366aaa": {
+    "nameJa": "JR 東南改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "3.JR新宿駅 2 東南改札"
+  },
+  "32398ada7f054ed8a8e8f503b361e610": {
+    "nameJa": "JR 南改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "3.JR新宿駅 2 南改札"
+  },
+  "b590f8783d3d4459905fc077cf0c08e2": {
+    "nameJa": "JR 南改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "3.JR新宿駅 2 南改札"
+  },
+  "51d62720f8bf4fd5879b70c2c9db5408": {
+    "nameJa": "小田急線 南口改札",
+    "lineIds": [
+      "line.odakyu"
+    ],
+    "source": "6.小田急新宿駅_小田急エース 2 南札口"
+  },
+  "72f9fa71dc3a46aeb6bbdde2cbd409cc": {
+    "nameJa": "JR 新南改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "2.JR新宿駅新南改札 2 新南口改札"
+  },
+  "ee35e1bdfcf0476fa848e9ca356b6667": {
+    "nameJa": "JR 甲州街道改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "2.JR新宿駅新南改札 2 甲州街道改札"
+  },
+  "8a1f8e088a814f729282a459b5db40d1": {
+    "nameJa": "JR ミライナタワー口改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "2.JR新宿駅新南改札 2 ミライナタワー口改札"
+  },
+  "a628691805db44e2b65d427271a8bc24": {
+    "nameJa": "JR 中央西改札",
+    "lineIds": [
+      "line.jr"
+    ],
+    "source": "3.JR新宿駅 B1 中央西改札"
+  }
+}

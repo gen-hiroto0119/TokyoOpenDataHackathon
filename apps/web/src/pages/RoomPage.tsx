@@ -43,7 +43,13 @@ import {
   saveExitReport,
   saveSession,
 } from "../session.js";
-import { primeRoomRecommendations, useCatalog, useRoom, useRoomRecommendations } from "../swr.js";
+import {
+  primeRoomRecommendations,
+  useCatalog,
+  useLandmarks,
+  useRoom,
+  useRoomRecommendations,
+} from "../swr.js";
 import { useRoomSocket } from "../ws.js";
 
 const shellStyles = stylex.create({
@@ -311,12 +317,22 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   // ---------------------------------------------------- 画面6/7: 自分の経路・いまいる場所
   const [hereOpen, setHereOpen] = useState(false);
   const [anchorNodeId, setAnchorNodeId] = useState<string | null>(null);
+  // 画面6でいま表示している手順のノード。RouteGuide がスクロール位置から
+  // 都度報告する(onCurrentNodeChange)。画面7を開くとき、この点を起点に
+  // 近くの地点(GET /v1/landmarks)を探す。
+  const [currentRouteNodeId, setCurrentRouteNodeId] = useState<string | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState(false);
   const [lastConfirmNodeId, setLastConfirmNodeId] = useState<string | null>(null);
   const [exitReport, setExitReport] = useState(() => loadExitReport(roomId));
   const [correctingExit, setCorrectingExit] = useState(false);
   const [correctExitError, setCorrectExitError] = useState(false);
+
+  const {
+    data: landmarksData,
+    error: landmarksError,
+    mutate: mutateLandmarks,
+  } = useLandmarks(hereOpen ? currentRouteNodeId : null);
 
   async function handleConfirmHere(nodeId: string) {
     if (!session) return;
@@ -477,12 +493,15 @@ function RoomPageInner({ roomId }: { roomId: string }) {
       return (
         <Here
           Kind="List"
-          rows={hereRowsOf(my.leg.confirmations)}
+          rows={landmarksData ? hereRowsOf(landmarksData.landmarks) : []}
+          loading={!landmarksData && !landmarksError}
+          loadError={!!landmarksError}
           busy={confirmBusy}
           error={confirmError}
           onBack={() => setHereOpen(false)}
           onConfirm={handleConfirmHere}
           onRetry={handleRetryConfirmHere}
+          onRetryLoad={() => void mutateLandmarks()}
         />
       );
     }
@@ -504,6 +523,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
         onCorrectExit={(labelJa) => void handleCorrectExit(exit.catalogId, labelJa)}
         onOpenHere={() => setHereOpen(true)}
         onTabSelect={setTab}
+        onCurrentNodeChange={setCurrentRouteNodeId}
       />
     );
   }

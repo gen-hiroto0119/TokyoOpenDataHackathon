@@ -21,15 +21,18 @@ describe("GET /v1/catalog", () => {
       lines: { id: string; nameJa: string }[];
       destinations: { catalogId: string; nameJa: string; lat: number; lng: number }[];
     };
-    // 3路線(代表ケース)から5路線へ意図的に更新。docs/RECOMMENDER.md
-    // 「載っていない路線があると、その人は参加できない」を受け、改札を持つ
-    // 路線をすべて出すことにしたため(実データでは JR・京王・大江戸・小田急・丸ノ内)。
+    // 3路線(代表ケース)から5路線(東京都データ)を経て7路線(国交省データ)へ
+    // 意図的に更新。docs/RECOMMENDER.md「載っていない路線があると、その人は
+    // 参加できない」を受け、改札を持つ路線をすべて出すことにしたため
+    // (実データでは JR・京王・丸ノ内・小田急・大江戸・都営新宿・西武新宿)。
     expect(body.lines.map((l) => l.id)).toEqual([
       "line.jr",
       "line.keio",
-      "line.oedo",
-      "line.odakyu",
       "line.marunouchi",
+      "line.odakyu",
+      "line.oedo",
+      "line.shinjuku",
+      "line.seibu",
     ]);
     expect(body.destinations.some((d) => d.catalogId === "dest.tokyo-metropolitan-government")).toBe(
       true,
@@ -56,6 +59,39 @@ describe("GET /v1/catalog", () => {
     for (const lineId of lineIdsWithGates) {
       expect(knownIds.has(lineId)).toBe(true);
     }
+  });
+
+  /**
+   * ドリフト検知の逆方向: 一覧にある路線には改札が1つ以上ある(表示だけの
+   * 路線を作らない)。路線ごとに分けているのは、line.shinjuku(都営新宿)・
+   * line.seibu(西武新宿)の2つだけ現時点で成り立たないため。
+   *
+   * apps/worker/data/catalog.json はまだ国交省データの取り込み(MLIT ingest)
+   * 前で、旧・東京都データのまま(改札は JR・京王・丸ノ内・小田急・大江戸の
+   * 5路線ぶんしか無い)。この2路線は docs/RECOMMENDER.md の一覧(7路線)には
+   * 載るが、改札はまだ結べていない。正直に it.todo にして、MLIT の取り込みが
+   * 入って entries[].lineIds に現れたら有効化する。
+   */
+  describe("ドリフト検知(逆方向): 一覧の各路線に改札が1つ以上ある", () => {
+    const catalog = catalogJson as Catalog;
+    const lineIdsWithGates = new Set<string>();
+    for (const entry of catalog.entries) {
+      for (const lineId of entry.lineIds) lineIdsWithGates.add(lineId);
+    }
+
+    it.each([
+      ["line.jr", "JR"],
+      ["line.keio", "京王"],
+      ["line.marunouchi", "丸ノ内"],
+      ["line.odakyu", "小田急"],
+      ["line.oedo", "大江戸"],
+    ])("%s (%s) に改札がある", (lineId) => {
+      expect(lineIdsWithGates.has(lineId)).toBe(true);
+    });
+
+    // MLIT 取り込みが data/catalog.json を差し替えたら it.todo を外して有効化する。
+    it.todo("line.shinjuku (都営新宿) に改札がある — MLIT 取り込み後に有効化");
+    it.todo("line.seibu (西武新宿) に改札がある — MLIT 取り込み後に有効化");
   });
 });
 

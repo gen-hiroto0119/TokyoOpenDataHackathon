@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>国交省 新宿 地図probe</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <style>
+      html,
+      body,
+      #map {
+        margin: 0;
+        height: 100%;
+      }
+      #bar,
+      #legend,
+      #distances {
+        position: absolute;
+        z-index: 1;
+        background: #fff;
+        padding: 8px 12px;
+        font: 13px/1.5 sans-serif;
+        border-radius: 8px;
+        box-shadow: 0 1px 4px #0003;
+      }
+      #bar {
+        top: 12px;
+        left: 12px;
+      }
+      #legend {
+        top: 148px;
+        left: 12px;
+        min-width: 148px;
+      }
+      #distances {
+        top: 12px;
+        right: 12px;
+        width: 280px;
+        max-height: calc(100% - 40px);
+        overflow: auto;
+      }
+      #floors {
+        display: block;
+        margin-top: 4px;
+      }
+      #legend h2,
+      #distances h2 {
+        margin: 0 0 6px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      #distance-list {
+        margin: 0;
+        padding-left: 20px;
+      }
+      #distance-list li {
+        margin: 5px 0;
+      }
+      #distance-list strong {
+        white-space: nowrap;
+      }
+      #legend ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      #legend li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 4px 0;
+      }
+      .swatch {
+        width: 16px;
+        height: 8px;
+        flex: none;
+        border-radius: 2px;
+      }
+      .swatch.dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        box-shadow: 0 0 0 1px #fff;
+      }
+      .swatch.line {
+        height: 3px;
+      }
+      .swatch.fill {
+        height: 12px;
+        width: 12px;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <div id="title">Path。確認用。アプリには載せない。</div>
+      <label><input type="checkbox" id="who-jr" checked /> JR</label>
+      <label><input type="checkbox" id="net" /> 網</label>
+      <label><input type="checkbox" id="face" checked /> 面</label>
+      <span id="floors"></span>
+    </div>
+    <div id="legend">
+      <h2>凡例</h2>
+      <ul id="legend-route">
+        <li><span class="swatch line" style="background:#2563eb"></span>Path</li>
+        <li><span class="swatch dot" style="background:#dc2626"></span>改札</li>
+        <li><span class="swatch dot" style="background:#16a34a"></span>集合</li>
+        <li><span class="swatch dot" style="background:#ea580c"></span>出口</li>
+        <li><span class="swatch dot" style="background:#6b7280"></span>曲がり</li>
+        <li><span class="swatch line" style="background:#7c3aed"></span>階段・ES（斜め）</li>
+        <li><span class="swatch line" style="background:#111827"></span>EV（垂直）</li>
+      </ul>
+      <ul id="legend-net" hidden>
+        <li><span class="swatch line" style="background:#d4d4d8"></span>歩行網</li>
+      </ul>
+      <ul id="legend-face" hidden>
+        <li><span class="swatch fill" style="background:#d4b483"></span>店</li>
+        <li><span class="swatch fill" style="background:#cfd4da"></span>通路</li>
+        <li><span class="swatch fill" style="background:#e9ecef"></span>部屋</li>
+        <li><span class="swatch fill" style="background:#7ec8e3"></span>階段</li>
+        <li><span class="swatch fill" style="background:#9b8cff"></span>エレベーター</li>
+        <li><span class="swatch fill" style="background:#f4a261"></span>エスカレーター</li>
+        <li><span class="swatch fill" style="background:#90be6d"></span>スロープ</li>
+        <li><span class="swatch fill" style="background:#4d96ff"></span>トイレ</li>
+        <li><span class="swatch fill" style="background:#adb5bd"></span>券売</li>
+        <li><span class="swatch fill" style="background:#f4e1b0"></span>待合</li>
+        <li><span class="swatch fill" style="background:#dee2e6"></span>その他</li>
+      </ul>
+    </div>
+    <div id="distances">
+      <h2>Node間の距離</h2>
+      <ol id="distance-list"></ol>
+    </div>
+    <div id="map"></div>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script type="text/plain" id="retired-probe-script">
+      const FLOOR_ORDER = ["B3F", "B2F", "B1F", "1F", "2F", "3F", "4F"];
+      const FLOOR_STEP_M = 14;
+      const colors = {
+        shop: "#d4b483",
+        stairs: "#7ec8e3",
+        elevator: "#9b8cff",
+        escalator: "#f4a261",
+        restroom: "#4d96ff",
+        corridor: "#cfd4da",
+        room: "#e9ecef",
+        ramp: "#90be6d",
+        ticket: "#adb5bd",
+        waiting: "#f4e1b0",
+        other: "#dee2e6",
+      };
+      const markColor = {
+        gate: 0xdc2626,
+        meeting: 0x16a34a,
+        exit: 0xea580c,
+        turn: 0x6b7280,
+        stairs: 0x7c3aed,
+        escalator: 0x7c3aed,
+        elevator: 0x111827,
+        node: 0x6b7280,
+      };
+
+      const toLabel = (f) => {
+        if (!f) return "";
+        if (String(f).endsWith("F")) return f;
+        if (f === "0") return "1F";
+        return `${f}F`;
+      };
+      const floorIndex = (f) => {
+        const i = FLOOR_ORDER.indexOf(toLabel(f));
+        return i < 0 ? 0 : i;
+      };
+      const spaceFloor = (label) => (label && String(label).endsWith("F") ? label.slice(0, -1) : label);
+      const altOf = (floor, origin) => (floorIndex(floor) - origin) * FLOOR_STEP_M;
+
+      const map = new maplibregl.Map({
+        container: "map",
+        style: {
+          version: 8,
+          light: { anchor: "viewport", color: "#ffffff", intensity: 0.45, position: [1.2, 210, 25] },
+          sources: {},
+          layers: [{ id: "bg", type: "background", paint: { "background-color": "#e8eaed" } }],
+        },
+        center: [139.7002, 35.6909],
+        zoom: 16.4,
+        pitch: 62,
+        bearing: -28,
+        maxPitch: 85,
+        antialias: true,
+      });
+
+      map.on("load", async () => {
+        const [spaces, links, routes, ends, connectors, meta] = await Promise.all([
+          fetch("./out/spaces.geojson").then((r) => r.json()),
+          fetch("./out/links.geojson").then((r) => r.json()),
+          fetch("./out/routes.geojson").then((r) => r.json()),
+          fetch("./out/route-ends.geojson").then((r) => r.json()),
+          fetch("./out/connectors.geojson").then((r) => r.json()),
+          fetch("./out/path-meta.json").then((r) => r.json()),
+        ]);
+        document.getElementById("title").textContent =
+          `垂直 ${meta.floors.join(" · ")}。面は国交省 Shapefile。確認用。`;
+
+        const withHeight = {
+          type: "FeatureCollection",
+          features: spaces.features.map((f) => {
+            const origin = Math.min(...(meta.floors ?? ["B1F"]).map(floorIndex));
+            const base = altOf(f.properties.floor, origin);
+            return {
+              ...f,
+              properties: { ...f.properties, base, top: base + 0.45 },
+            };
+          }),
+        };
+
+        map.addSource("spaces", { type: "geojson", data: withHeight });
+        map.addSource("links", { type: "geojson", data: links });
+        map.addLayer({
+          id: "spaces-fill",
+          type: "fill-extrusion",
+          source: "spaces",
+          paint: {
+            "fill-extrusion-color": [
+              "match",
+              ["get", "kind"],
+              "shop",
+              colors.shop,
+              "stairs",
+              colors.stairs,
+              "elevator",
+              colors.elevator,
+              "escalator",
+              colors.escalator,
+              "restroom",
+              colors.restroom,
+              "corridor",
+              colors.corridor,
+              "room",
+              colors.room,
+              "ramp",
+              colors.ramp,
+              "ticket",
+              colors.ticket,
+              "waiting",
+              colors.waiting,
+              colors.other,
+            ],
+            "fill-extrusion-opacity": 0.72,
+            "fill-extrusion-base": ["get", "base"],
+            "fill-extrusion-height": ["get", "top"],
+          },
+        });
+        map.addLayer({
+          id: "links-line",
+          type: "line",
+          source: "links",
+          layout: { visibility: "none" },
+          paint: { "line-color": "#d4d4d8", "line-width": 1 },
+        });
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.Camera();
+        let renderer = null;
+        const pathGroup = new THREE.Group();
+        scene.add(pathGroup);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+
+        const meter = maplibregl.MercatorCoordinate.fromLngLat({ lng: 139.7, lat: 35.69 }, 0).meterInMercatorCoordinateUnits();
+
+        const toVec = (lng, lat, alt) => {
+          const m = maplibregl.MercatorCoordinate.fromLngLat({ lng, lat }, alt);
+          return new THREE.Vector3(m.x, m.y, m.z);
+        };
+
+        const mats = {};
+        const materialOf = (color) => {
+          if (!mats[color]) mats[color] = new THREE.MeshBasicMaterial({ color });
+          return mats[color];
+        };
+        const yUp = new THREE.Vector3(0, 1, 0);
+
+        const addTube = (lnglats, alts, color, radiusM) => {
+          if (lnglats.length < 2) return;
+          const pts = lnglats.map((ll, i) => toVec(ll[0], ll[1], alts[i] ?? alts[0]));
+          const mat = materialOf(color);
+          const radius = radiusM * meter;
+          for (let i = 1; i < pts.length; i++) {
+            const a = pts[i - 1];
+            const b = pts[i];
+            const dir = b.clone().sub(a);
+            const len = dir.length();
+            if (len < meter * 0.08) continue;
+            const geom = new THREE.CylinderGeometry(radius, radius, len, 6, 1, false);
+            const mesh = new THREE.Mesh(geom, mat);
+            mesh.position.copy(a).add(b).multiplyScalar(0.5);
+            mesh.quaternion.setFromUnitVectors(yUp, dir.normalize());
+            pathGroup.add(mesh);
+          }
+        };
+
+        const addSphere = (lng, lat, alt, color, rM) => {
+          const mesh = new THREE.Mesh(
+            new THREE.SphereGeometry(rM * meter, 12, 10),
+            new THREE.MeshBasicMaterial({ color }),
+          );
+          mesh.position.copy(toVec(lng, lat, alt));
+          pathGroup.add(mesh);
+        };
+
+        const rebuildPath = (floors) => {
+          while (pathGroup.children.length) {
+            const obj = pathGroup.children[0];
+            pathGroup.remove(obj);
+            obj.geometry?.dispose();
+          }
+          const origin = Math.min(...(meta.floors ?? ["B1F"]).map(floorIndex));
+          for (const f of routes.features) {
+            if (!floors.includes(f.properties.floor)) continue;
+            const z = altOf(f.properties.floor, origin) + 0.7;
+            addTube(f.geometry.coordinates, f.geometry.coordinates.map(() => z), 0x2563eb, 0.7);
+          }
+          for (const f of connectors.features) {
+            if (!floors.includes(f.properties.fromFloor) || !floors.includes(f.properties.toFloor)) continue;
+            const [a, b] = f.geometry.coordinates;
+            const z0 = altOf(f.properties.fromFloor, origin) + 0.7;
+            const z1 = altOf(f.properties.toFloor, origin) + 0.7;
+            const color = f.properties.kind === "elevator" ? 0x111827 : 0x7c3aed;
+            addTube([a, b], [z0, z1], color, 0.55);
+          }
+          for (const f of ends.features) {
+            if (!floors.includes(f.properties.floor)) continue;
+            const [lng, lat] = f.geometry.coordinates;
+            const z = altOf(f.properties.floor, origin) + 1.2;
+            addSphere(lng, lat, z, markColor[f.properties.kind] ?? 0x6b7280, f.properties.kind === "turn" ? 1.1 : 1.6);
+          }
+        };
+
+        map.addLayer({
+          id: "path-3d",
+          type: "custom",
+          renderingMode: "3d",
+          onAdd(_map, gl) {
+            renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true });
+            renderer.autoClear = false;
+          },
+          render(_gl, matrix) {
+            const raw = matrix?.defaultProjectionData?.mainMatrix ?? matrix;
+            camera.projectionMatrix = new THREE.Matrix4().fromArray(raw);
+            renderer.resetState();
+            renderer.render(scene, camera);
+            map.triggerRepaint();
+          },
+        });
+
+        const show = (id, on) => {
+          map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
+        };
+        const whoIds = [["who-jr", "JR"]];
+        const floorBox = document.getElementById("floors");
+        const floorIds = (meta.floors ?? []).map((f, i) => {
+          const id = `floor-${i}`;
+          const label = document.createElement("label");
+          label.innerHTML = `<input type="checkbox" id="${id}" checked /> ${f}`;
+          floorBox.appendChild(label);
+          return [id, f];
+        });
+
+        const apply = () => {
+          const floors = floorIds.filter(([id]) => document.getElementById(id).checked).map(([, name]) => name);
+          const routeOn = document.getElementById("who-jr").checked && floors.length > 0;
+          const netOn = document.getElementById("net").checked;
+          const faceOn = document.getElementById("face").checked;
+          const origin = Math.min(...(meta.floors ?? ["B1F"]).map(floorIndex));
+          map.getSource("spaces").setData({
+            type: "FeatureCollection",
+            features: withHeight.features.map((f) => {
+              const base = altOf(f.properties.floor, origin);
+              return { ...f, properties: { ...f.properties, base, top: base + 0.45 } };
+            }),
+          });
+          map.setFilter("spaces-fill", ["in", ["get", "floor"], ["literal", floors.map(spaceFloor)]]);
+          show("spaces-fill", faceOn);
+          show("links-line", netOn);
+          show("path-3d", routeOn);
+          rebuildPath(routeOn ? floors : []);
+          document.getElementById("legend-route").hidden = !routeOn;
+          document.getElementById("legend-net").hidden = !netOn;
+          document.getElementById("legend-face").hidden = !faceOn;
+        };
+        for (const [id] of whoIds) document.getElementById(id).onchange = apply;
+        for (const [id] of floorIds) document.getElementById(id).onchange = apply;
+        document.getElementById("net").onchange = apply;
+        document.getElementById("face").onchange = apply;
+        apply();
+      });
+    </script>
+    <script src="./probe-3d.js"></script>
+  </body>
+</html>

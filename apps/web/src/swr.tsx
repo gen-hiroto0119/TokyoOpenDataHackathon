@@ -3,7 +3,7 @@
 // — room / recommendations の応答にトークンは含まれないので、自然と入らない。
 import type { ReactNode } from "react";
 import useSWR, { mutate as globalMutate, SWRConfig, type Cache } from "swr";
-import type { CatalogResponse, RecommendationResponse } from "worker/src/contract.js";
+import type { CatalogResponse, LandmarksResponse, RecommendationResponse } from "worker/src/contract.js";
 import type { Room } from "worker/src/room.js";
 import { ApiError, api } from "./api.js";
 
@@ -123,6 +123,25 @@ export async function primeRoomRecommendations(
   const result = await recsFetcher(key);
   await globalMutate(key, result, { revalidate: false });
   return result;
+}
+
+// ---------------------------------------------------------------- 画面7: いまいる場所
+
+type LandmarksKey = readonly ["landmarks", string];
+
+function landmarksKey(nearNodeId: string | null): LandmarksKey | null {
+  return nearNodeId ? (["landmarks", nearNodeId] as const) : null;
+}
+
+async function landmarksFetcher([, nearNodeId]: LandmarksKey): Promise<LandmarksResponse> {
+  return api.landmarks(nearNodeId);
+}
+
+/** near ノードが変わるたびに取り直す(キーに含める)。 */
+export function useLandmarks(nearNodeId: string | null) {
+  return useSWR(landmarksKey(nearNodeId), landmarksFetcher, {
+    revalidateOnFocus: false,
+  });
 }
 
 // ---------------------------------------------------------------- catalog
