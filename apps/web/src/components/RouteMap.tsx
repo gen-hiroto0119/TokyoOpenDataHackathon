@@ -3,7 +3,12 @@ import maplibregl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibr
 import "maplibre-gl/dist/maplibre-gl.css";
 import * as stylex from "@stylexjs/stylex";
 import type { RouteMap as RouteMapData, RouteMapMarkKind } from "worker/src/contract.js";
-import { hereLngLat, segmentCamera } from "../route-map-camera.js";
+import {
+  hereLngLat,
+  LONG_STRAIGHT_M,
+  segmentCamera,
+  segmentPathCoords,
+} from "../route-map-camera.js";
 import { color } from "../tokens/color.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
@@ -275,6 +280,25 @@ function focusCollection(coords: LngLat[]): GeoJSON.FeatureCollection {
   };
 }
 
+function routeChevronImage(): ImageData {
+  const canvas = document.createElement("canvas");
+  canvas.width = 24;
+  canvas.height = 24;
+  const context = canvas.getContext("2d");
+  if (!context) return new ImageData(canvas.width, canvas.height);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.beginPath();
+  context.moveTo(7, 5);
+  context.lineTo(16, 12);
+  context.lineTo(7, 19);
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 4;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.stroke();
+  return context.getImageData(0, 0, canvas.width, canvas.height);
+}
+
 function addRouteLayers(map: MapLibreMap) {
   map.addSource("route", { type: "geojson", data: emptyCollection() });
   map.addSource("focus", { type: "geojson", data: emptyCollection() });
@@ -302,6 +326,27 @@ function addRouteLayers(map: MapLibreMap) {
       "line-opacity": 0.98,
     },
     layout: { "line-cap": "round", "line-join": "round" },
+  });
+  if (!map.hasImage("route-chevron")) {
+    map.addImage("route-chevron", routeChevronImage(), { pixelRatio: 2 });
+  }
+  map.addLayer({
+    id: "focus-direction",
+    type: "symbol",
+    source: "focus",
+    layout: {
+      "symbol-placement": "line",
+      "symbol-spacing": 48,
+      "icon-image": "route-chevron",
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
+      "icon-keep-upright": false,
+      "icon-rotation-alignment": "map",
+      "icon-pitch-alignment": "map",
+    },
+    paint: {
+      "icon-opacity": 0.92,
+    },
   });
   map.addLayer({
     id: "connector-line",
@@ -476,19 +521,27 @@ function fitSegment(
   floor: string,
   fromNodeId: string | null,
   toNodeId: string | null,
+  hereBetween: boolean,
 ) {
   if (!map.getStyle()) return;
   const root = map.getContainer();
   const camera = segmentCamera(data, floor, fromNodeId, toNodeId, {
     width: Math.max(root.clientWidth, 1),
     height: Math.max(root.clientHeight, 1),
-  });
+  }, hereBetween);
+  setSource(map, "focus", emptyCollection());
   if (camera) {
-    setSource(map, "focus", emptyCollection());
+    const longPath =
+      hereBetween && camera.lengthM >= LONG_STRAIGHT_M
+        ? segmentPathCoords(data, floor, fromNodeId, toNodeId)
+        : [];
+    setSource(map, "focus", focusCollection(longPath));
     const host = root.parentElement;
     if (host instanceof HTMLElement) {
       host.dataset.cameraZoom = camera.zoom.toFixed(2);
       host.dataset.cameraBearing = camera.bearing.toFixed(1);
+      host.dataset.segmentLength = camera.lengthM.toFixed(1);
+      host.dataset.longStraight = longPath.length >= 2 ? "true" : "false";
     }
     applyCamera(map, camera, 480);
     return;
@@ -592,7 +645,7 @@ export function RouteMap({
           setSource(map, "here", hereCollection(current, floor, fromNodeId, toNodeId, currentNodeId, hereBetween));
           applyFloor(map, indoorRef.current, floor);
           map.resize();
-          fitSegment(map, current, floor, fromNodeId, toNodeId);
+          fitSegment(map, current, floor, fromNodeId, toNodeId, hereBetween);
         } catch {
           // レイヤ追加の失敗で unmount しない。
         }
@@ -636,7 +689,7 @@ export function RouteMap({
       setSource(map, "marks", markCollection(current, floor, currentNodeId));
       setSource(map, "here", hereCollection(current, floor, fromNodeId, toNodeId, currentNodeId, hereBetween));
       applyFloor(map, indoorRef.current, floor);
-      fitSegment(map, current, floor, fromNodeId, toNodeId);
+      fitSegment(map, current, floor, fromNodeId, toNodeId, hereBetween);
     } catch {
       // 手順切り替えで例外が出ても地図は残す。
     }

@@ -154,7 +154,8 @@ export function rowsOfStep(step: Step, prevFloorLabel: string | null): PathRow[]
       Kind: "Move",
       Detail: moveDetail(step.distanceM),
       Icon: "Straight",
-      floorLabel: step.floorLabel,
+      // 階移動の手前まで歩く行は、到着階ではなく出発階に置く。
+      floorLabel: step.vertical !== "none" ? (prevFloorLabel ?? step.floorLabel) : step.floorLabel,
     });
   }
 

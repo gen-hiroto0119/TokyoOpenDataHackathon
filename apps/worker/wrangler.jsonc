@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "eki-awase",
+  "name": "atsumap",
   "account_id": "cf9e0849945f9b5a5cf123a5a7635bbc",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-17",

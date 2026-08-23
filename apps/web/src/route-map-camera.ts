@@ -8,6 +8,9 @@ const MIN_SPAN_M = 48;
 const MIN_ZOOM = 17.2;
 const MAX_ZOOM = 18.4;
 const M_PER_PX_Z0 = 156543.03392;
+export const LONG_STRAIGHT_M = 45;
+const DEFAULT_SEGMENT_HEIGHT_RATIO = 0.42;
+const LONG_SEGMENT_HEIGHT_RATIO = 0.64;
 
 function pointsOf(map: RouteMap): RouteMapPoint[] {
   return map.points ?? [];
@@ -92,8 +95,11 @@ export function travelEnds(
   return null;
 }
 
-/** いまの区間の折れ線。階を跨ぐときは、表示中の階に残っている分だけ。 */
-export function focusCoords(
+/**
+ * 2 つの節の間にある実経路。points が無い場合は直線で補わない。
+ * 階を跨ぐときは、表示中の階に残っている分だけ返す。
+ */
+export function segmentPathCoords(
   map: RouteMap,
   floor: string,
   fromNodeId: string | null,
@@ -115,6 +121,20 @@ export function focusCoords(
     const onFloor = (points[fromI]?.floor ?? "") === floor || (points[toI]?.floor ?? "") === floor;
     if (onFloor && slice.length > 0) return slice;
   }
+  return [];
+}
+
+/** いまの区間の折れ線。カメラだけは節が解けない場合も表示階の実経路へ寄せる。 */
+export function focusCoords(
+  map: RouteMap,
+  floor: string,
+  fromNodeId: string | null,
+  toNodeId: string | null,
+): LngLat[] {
+  const points = pointsOf(map);
+  const fromI = fromNodeId ? points.findIndex((row) => row.nodeId === fromNodeId) : -1;
+  const exact = segmentPathCoords(map, floor, fromNodeId, toNodeId);
+  if (exact.length > 0) return exact;
   if (fromI >= 0 && (points[fromI]!.floor ?? "") === floor) {
     return [[points[fromI]!.lng, points[fromI]!.lat]];
   }
@@ -196,15 +216,20 @@ export type SegmentCamera = {
   bearing: number;
   pitch: number;
   focus: LngLat[];
+  lengthM: number;
 };
 
-/** heading-up。区間が画面の大半を占めるズーム。pitch は map-probe と同じ 58。 */
+/**
+ * heading-up。長い直進は両端が読める範囲で画面を縦に使い、
+ * 短い区間は従来どおり node-close-up にしない。
+ */
 export function segmentCamera(
   map: RouteMap,
   floor: string,
   fromNodeId: string | null,
   toNodeId: string | null,
   size: { width: number; height: number },
+  between = false,
 ): SegmentCamera | null {
   const focus = focusCoords(map, floor, fromNodeId, toNodeId);
   const ends = travelEnds(map, fromNodeId, toNodeId);
@@ -221,15 +246,10 @@ export function segmentCamera(
   const coords = focus.length >= 2 ? focus.filter((row) => Number.isFinite(row[0]) && Number.isFinite(row[1])) : sameLngLat(from, to) ? [from] : [from, to];
   if (coords.length === 0) return null;
   const along = Math.max(polylineLengthM(coords), haversineM(from, to));
-  const mid: LngLat =
-    coords.length === 1
-      ? coords[0]!
-      : [
-          (coords[0]![0] + coords[coords.length - 1]![0]) / 2,
-          (coords[0]![1] + coords[coords.length - 1]![1]) / 2,
-        ];
+  const mid = polylineMidpoint(coords) ?? coords[0]!;
   if (!Number.isFinite(mid[0]) || !Number.isFinite(mid[1])) return null;
-  const zoom = zoomForMeters(Math.max(along, MIN_SPAN_M), Math.max(size.height, 1) * 0.42, mid[1]);
+  const heightRatio = between && along >= LONG_STRAIGHT_M ? LONG_SEGMENT_HEIGHT_RATIO : DEFAULT_SEGMENT_HEIGHT_RATIO;
+  const zoom = zoomForMeters(Math.max(along, MIN_SPAN_M), Math.max(size.height, 1) * heightRatio, mid[1]);
   const bearing = Number.isFinite(heading) ? heading : 0;
   return {
     center: mid,
@@ -237,5 +257,6 @@ export function segmentCamera(
     bearing,
     pitch: 50,
     focus: coords,
+    lengthM: along,
   };
 }

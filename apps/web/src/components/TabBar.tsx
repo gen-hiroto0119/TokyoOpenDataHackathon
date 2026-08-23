@@ -97,7 +97,7 @@ function itemType(selected: boolean) {
   return selected ? type["UI/Caption/Bold"] : type["UI/Caption/Regular"];
 }
 
-export function TabBar({ Selected = "Route", onSelect }: TabBarProps) {
+export function TabBar({ Selected = "Room", onSelect }: TabBarProps) {
   return (
     <nav className={stylexClassName(styles.root)}>
       {items.map((kind) => {

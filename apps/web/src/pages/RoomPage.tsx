@@ -137,8 +137,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   const [terminal, setTerminal] = useState<Terminal>(null);
   const [session, setSession] = useState<Session | null>(() => loadSession(roomId));
   const [rejoinNotice, setRejoinNotice] = useState(false);
-  // 路線が入ったあとは経路タブから始める。候補と比較まで自分でたどり着けるようにする。
-  const [tab, setTab] = useState<TabBarSelected>("Route");
+  const [tab, setTab] = useState<TabBarSelected>("Room");
   const [inviteCopiedAt, setInviteCopiedAt] = useState<number | null>(null);
 
   useEffect(() => {
