@@ -1,0 +1,9 @@
+[
+  { "id": "line.jr", "nameJa": "JR" },
+  { "id": "line.keio", "nameJa": "京王" },
+  { "id": "line.marunouchi", "nameJa": "丸ノ内" },
+  { "id": "line.odakyu", "nameJa": "小田急" },
+  { "id": "line.oedo", "nameJa": "大江戸" },
+  { "id": "line.shinjuku", "nameJa": "都営新宿" },
+  { "id": "line.seibu", "nameJa": "西武新宿" }
+]

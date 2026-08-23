@@ -4,6 +4,7 @@ import {
   buildRoomRecommendations,
   limitRanked,
   parseRoomRecommendationsLimit,
+  publicRecommendations,
 } from "../src/room-recommendations.js";
 import type { Room } from "../src/room.js";
 import { fixture } from "./fixture.js";
@@ -39,7 +40,7 @@ function makeRoom(overrides: Partial<Room> = {}): Room {
       lat: 35.6896,
       lng: 139.6917,
     },
-    meetingNodeId: null,
+    meetingCatalogId: null,
     expiresAt: NOW,
     participants: [participant("jr", "line.jr"), participant("keio", "line.keio")],
     createdAt: NOW,
@@ -72,12 +73,12 @@ describe("limitRanked", () => {
     dataset: { id: "tokyo.shinjuku-terminal" as const, version: "v", graphHash: "h", attributionJa: "a" },
     walkingSpeedMps: 1.2,
     ranked: [
-      { rank: 1, meeting: { nodeId: "m1" } },
-      { rank: 2, meeting: { nodeId: "m2" } },
-      { rank: 3, meeting: { nodeId: "m3" } },
+      { rank: 1, meeting: { catalogId: "meet.1" } },
+      { rank: 2, meeting: { catalogId: "meet.2" } },
+      { rank: 3, meeting: { catalogId: "meet.3" } },
     ],
     infeasible: [{ nodeId: "x1", nameJa: "x", reason: "unreachable" as const, textJa: "t" }],
-    // biome-ignore lint: テスト用の簡略な形。limitRanked は meeting.nodeId と rank しか見ない。
+    // biome-ignore lint: テスト用の簡略な形。limitRanked は meeting.catalogId と rank しか見ない。
   } as any;
 
   it("上位 limit 件に絞り、rank 値はそのまま", () => {
@@ -85,13 +86,13 @@ describe("limitRanked", () => {
     expect(out.ranked.map((r: any) => r.rank)).toEqual([1, 2]);
   });
 
-  it("meetingNodeId が圏外なら末尾に足す（rank は元のまま）", () => {
-    const out = limitRanked(response, "m3", 1);
+  it("meetingCatalogId が圏外なら末尾に足す（rank は元のまま）", () => {
+    const out = limitRanked(response, "meet.3", 1);
     expect(out.ranked.map((r: any) => r.rank)).toEqual([1, 3]);
   });
 
-  it("meetingNodeId が圏内ならそのまま（重複しない）", () => {
-    const out = limitRanked(response, "m2", 2);
+  it("meetingCatalogId が圏内ならそのまま（重複しない）", () => {
+    const out = limitRanked(response, "meet.2", 2);
     expect(out.ranked.map((r: any) => r.rank)).toEqual([1, 2]);
   });
 
@@ -118,7 +119,7 @@ describe("buildRoomRecommendations", () => {
     );
   });
 
-  it("POST /v1/recommendations と同じ形で返る", () => {
+  it("順位は recommend() と同じ", () => {
     const room = makeRoom({
       participants: [
         participant("jr", "line.jr"),
@@ -144,9 +145,9 @@ describe("buildRoomRecommendations", () => {
     expect(res.ranked[0]!.rank).toBe(1);
   });
 
-  it("meetingNodeId が絞った先に無ければ末尾に足す", () => {
+  it("meetingCatalogId が絞った先に無ければ末尾に足す", () => {
     const room = makeRoom({
-      meetingNodeId: "m.koban",
+      meetingCatalogId: "meet.koban",
       participants: [
         participant("jr", "line.jr"),
         participant("keio", "line.keio"),
@@ -157,5 +158,47 @@ describe("buildRoomRecommendations", () => {
     expect(res.ranked.map((r) => r.meeting.nodeId)).toEqual(["m.board", "m.koban"]);
     expect(res.ranked[0]!.rank).toBe(1);
     expect(res.ranked[1]!.rank).toBe(3);
+  });
+});
+
+describe("publicRecommendations", () => {
+  it("手順と経路 ID を落とし、比較に使う欄は残す", () => {
+    const fat = buildRoomRecommendations(
+      fixture,
+      makeRoom({
+        participants: [
+          participant("jr", "line.jr"),
+          participant("keio", "line.keio"),
+          participant("marunouchi", "line.marunouchi"),
+        ],
+      }),
+      10,
+    );
+    const slim = publicRecommendations(fat);
+    const row = slim.ranked[0]!;
+    const fatRow = fat.ranked[0]!;
+    expect(row.meeting).toEqual(fatRow.meeting);
+    expect(row.scores).toEqual(fatRow.scores);
+    expect(row.reasons).toEqual(fatRow.reasons);
+    expect(row.legs[0]).toEqual({
+      participantId: fatRow.legs[0]!.participantId,
+      entry: fatRow.legs[0]!.entry,
+      distanceM: fatRow.legs[0]!.distanceM,
+      costSeconds: fatRow.legs[0]!.costSeconds,
+      floorChanges: fatRow.legs[0]!.floorChanges,
+      branchCount: fatRow.legs[0]!.branchCount,
+    });
+    expect(row.legs[0]).not.toHaveProperty("steps");
+    expect(row.legs[0]).not.toHaveProperty("pathNodeIds");
+    expect(row.legs[0]).not.toHaveProperty("pathLinkIds");
+    expect(row.legs[0]).not.toHaveProperty("confirmations");
+    expect(row.onward).toEqual({
+      distanceM: fatRow.onward.distanceM,
+      exit: fatRow.onward.exit,
+    });
+    expect(row.onward).not.toHaveProperty("steps");
+    expect(row.onward).not.toHaveProperty("pathNodeIds");
+    expect(row.onward).not.toHaveProperty("pathLinkIds");
+    expect(slim.infeasible).toEqual(fat.infeasible);
   });
 });

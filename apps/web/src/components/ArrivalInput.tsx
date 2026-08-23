@@ -14,9 +14,9 @@ export type ArrivalInputProps = {
   options?: ReadonlyArray<FieldSelectOption>;
   onValueChange?: (value: string | null) => void;
   /**
-   * 読み取り(スクリーンショットからの自動入力)を出すか。既定は出す。
-   * 読み取りは縦切りに入っていないので、実配線の画面では false にして隠す。
-   * 押しても何も起きない導線を置かないため。
+   * 読み取り(スクリーンショットからの自動入力)を出すか。既定は出さない。
+   * 読み取りは縦切りに入っていない。実画面では出さない。
+   * デザインシステムの Story だけ true にする。
    */
   ShowReader?: boolean;
 };
@@ -80,7 +80,7 @@ export function ArrivalInput({
   Value,
   options = arrivalLines,
   onValueChange,
-  ShowReader = true,
+  ShowReader = false,
 }: ArrivalInputProps) {
   return (
     <div className={stylexClassName(styles.root)}>

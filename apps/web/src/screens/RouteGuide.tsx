@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from "react";
-import { Button as BaseButton } from "@base-ui/react/button";
 import * as stylex from "@stylexjs/stylex";
+import type { RouteMap as RouteMapData } from "worker/src/contract.js";
 import { color } from "../tokens/color.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
@@ -8,8 +8,9 @@ import { AppBar } from "../components/AppBar.js";
 import { Handoff } from "../components/Handoff.js";
 import { Icon } from "../components/Icon.js";
 import { Path } from "../components/Path.js";
+import { RouteMap } from "../components/RouteMap.js";
 import { TabBar, type TabBarSelected } from "../components/TabBar.js";
-import { rowIndexOfNode, type PathRow } from "../route-view.js";
+import { displayFloorLabel, focusSegment, rowIndexOfNode, type PathRow } from "../route-view.js";
 
 /** Storybook / props 未指定時のフォールバック。実データは RoomPage が渡す。 */
 const DEFAULT_ROWS: readonly PathRow[] = [
@@ -20,8 +21,16 @@ const DEFAULT_ROWS: readonly PathRow[] = [
     Landmark: "丸ノ内線改札",
     Detail: "出て直進 · 30m",
     Icon: "Straight",
+    floorLabel: "B1F",
   },
-  { kind: "path", nodeId: "move-1", Kind: "Move", Detail: "直進する · 100m", Icon: "Straight" },
+  {
+    kind: "path",
+    nodeId: "move-1",
+    Kind: "Move",
+    Detail: "直進する · 100m",
+    Icon: "Straight",
+    floorLabel: "B1F",
+  },
   {
     kind: "path",
     nodeId: "meeting",
@@ -31,6 +40,7 @@ const DEFAULT_ROWS: readonly PathRow[] = [
     Goal: "集合場所",
     ShowGoal: true,
     Icon: "Right",
+    floorLabel: "B1F",
   },
   {
     kind: "path",
@@ -41,6 +51,7 @@ const DEFAULT_ROWS: readonly PathRow[] = [
     Goal: "出口",
     ShowGoal: true,
     Icon: "Straight",
+    floorLabel: "1F",
   },
 ];
 
@@ -57,24 +68,15 @@ export type RouteGuideProps = {
   HandoffCorrectBusy?: boolean;
   /** 直前の送信が失敗した。 */
   HandoffCorrectError?: boolean;
+  map?: RouteMapData | null;
+  attributionJa?: string;
   onOpenMap?: () => void;
   onCorrectExit?: (labelJa: string) => void;
-  onOpenHere?: () => void;
   onTabSelect?: (selected: TabBarSelected) => void;
-  /**
-   * 表示中の手順(スクロール位置)が変わるたびに、その行の nodeId を返す。
-   * 画面7「いまいる場所」が近くの地点を探す起点に使う(RoomPage が保持する)。
-   */
-  onCurrentNodeChange?: (nodeId: string) => void;
 };
 
-// 画面は 390×844 の固定枠(SCREENS.md)。可変幅を持たないので px 定数で足りる。
-const ROOT_HEIGHT = 844;
-const ROOT_WIDTH = 390;
 /** スナップ基準線: 手順リスト(.steps)下端から 22% 上(下寄り)。1 = 下端。
- * Handoff が App bar 直下の固定カードになったため、.steps の可視高さは
- * Handoff の実丈ぶん変わる — ratio は clientHeight を都度読むだけで、
- * 固定 px には依存しない。 */
+ * ratio は clientHeight を都度読むだけで、固定 px には依存しない。 */
 const SNAP_LINE_RATIO = 0.78;
 const STEPS_PAD_INLINE = 16; // space-6
 /** ネイティブスナップ(慣性スクロール終了時の吸着先)を下寄り基準に揃える
@@ -88,33 +90,20 @@ const styles = stylex.create({
     position: "relative",
     display: "flex",
     flexDirection: "column",
-    width: ROOT_WIDTH,
-    height: ROOT_HEIGHT,
+    width: "100%",
+    maxWidth: 480,
+    height: "100dvh",
+    minHeight: "100dvh",
+    marginInline: "auto",
     overflow: "hidden",
     backgroundColor: color["--color-surface-shell"],
-  },
-  handoffWrap: {
-    boxSizing: "border-box",
-    width: "100%",
-    margin: 0,
-    padding: space["--space-6"],
-    paddingBottom: space["--space-5"],
-    backgroundColor: color["--color-surface-work"],
-    borderBottomWidth: space["--border-width"],
-    borderBottomStyle: "solid",
-    borderBottomColor: color["--color-border-subtle"],
-    flexShrink: 0,
   },
   steps: {
     boxSizing: "border-box",
     width: "100%",
     margin: 0,
     paddingInline: STEPS_PAD_INLINE,
-    // 上下非対称: 下寄りスナップ線に最上部/最下部の行が届くための余白。
-    // 両端とも普通の手順行(Handoff は外に出た)で、行の実丈で厳密には
-    // 決まらないため、想定される最大丈で余裕を見る。
-    paddingBlockStart: 380,
-    paddingBlockEnd: 130,
+    paddingBlock: 0,
     overflowX: "hidden",
     overflowY: "auto",
     overscrollBehavior: "contain",
@@ -141,6 +130,10 @@ const styles = stylex.create({
     alignItems: "stretch",
     gap: space["--space-6"],
     width: "100%",
+    // スナップ用の上下余白はスクロール内容側に置く。スクロール枠に
+    // padding すると、短い画面で枠の最小高さがタブバーを押し出す。
+    paddingBlockStart: 380,
+    paddingBlockEnd: 130,
   },
   spine: {
     boxSizing: "border-box",
@@ -182,36 +175,6 @@ const styles = stylex.create({
     color: color["--color-surface-float"],
     boxShadow: "0 0 0 2px #ffffff, 0 1px 4px rgba(23, 35, 45, 0.20)",
     pointerEvents: "none",
-  },
-  openHere: {
-    boxSizing: "border-box",
-    position: "absolute",
-    right: space["--space-6"],
-    bottom: 72,
-    zIndex: 2,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: space["--hit-area-touch-min"],
-    height: space["--hit-area-touch-min"],
-    margin: 0,
-    padding: 0,
-    borderWidth: 0,
-    borderRadius: space["--radius-full"],
-    backgroundColor: color["--color-surface-scrim"],
-    color: color["--color-text-on-action"],
-    cursor: "pointer",
-    appearance: "none",
-    outlineWidth: {
-      default: 0,
-      ":focus-visible": space["--focus-width"],
-    },
-    outlineStyle: {
-      default: "none",
-      ":focus-visible": "solid",
-    },
-    outlineColor: color["--color-focus"],
-    outlineOffset: 0,
   },
   visuallyHidden: {
     position: "absolute",
@@ -282,48 +245,6 @@ function announcementOf(row: PathRow, position: number, total: number): string {
   return `${position}/${total} ${landmark}${detail}`.trim();
 }
 
-/** Detail 文字列の末尾 "· {N}m" から距離を取り出す。route-view.ts の
- * moveDetail/rowsOfStep は距離を持たせる行を必ずこの形("直進する · 100m"
- * 等)で作るため、rows(rowsOfLeg の出力)を変えずに逆算できる。距離を
- * 持たない行(曲がる・階段などの動作行)は 0。 */
-function distanceOfDetail(detail: string): number {
-  const match = /·\s*(\d+)m$/.exec(detail);
-  return match ? Number(match[1]) : 0;
-}
-
-/** rows[from..to](両端含む)の距離の合計。 */
-function sumDistance(rows: readonly PathRow[], from: number, to: number): number {
-  let total = 0;
-  for (let i = from; i <= to; i++) {
-    const row = rows[i];
-    if (row) total += distanceOfDetail(row.Detail);
-  }
-  return total;
-}
-
-/** HandoffFrom("出口 8 を出たところから" / "地上出口を出たところから")から
- * 地点の言い方だけを取り出す。route-view.ts の handoffFrom の逆。 */
-function exitPlaceOf(handoffFromText: string): string {
-  return handoffFromText.replace(/を出たところから$/, "").trim();
-}
-
-/** Handoff カード内の残距離行。current が集合場所より手前なら集合場所まで、
- * 以降(または集合場所の行が無い)なら出口まで。 */
-function remainderOf(rows: readonly PathRow[], current: number, handoffFromText: string): string {
-  const meetingIndex = rows.findIndex((r) => r.Goal === "集合場所");
-  const exitIndex = rows.findIndex((r) => r.Goal === "出口");
-
-  if (meetingIndex !== -1 && current <= meetingIndex) {
-    const meters = sumDistance(rows, current, meetingIndex);
-    const name = rows[meetingIndex]?.Landmark;
-    return name ? `集合場所まで ${meters}m · ${name}` : `集合場所まで ${meters}m`;
-  }
-  const exitPlace = exitPlaceOf(handoffFromText);
-  if (exitIndex === -1) return `${exitPlace}まで 0m`;
-  const from = Math.min(Math.max(current, 0), exitIndex);
-  return `${exitPlace}まで ${sumDistance(rows, from, exitIndex)}m`;
-}
-
 export function RouteGuide({
   rows = DEFAULT_ROWS,
   anchorNodeId = null,
@@ -333,20 +254,27 @@ export function RouteGuide({
   HandoffReported = false,
   HandoffCorrectBusy = false,
   HandoffCorrectError = false,
+  map = null,
+  attributionJa,
   onOpenMap,
   onCorrectExit,
-  onOpenHere,
   onTabSelect,
-  onCurrentNodeChange,
 }: RouteGuideProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
   const [current, setCurrent] = useState(() => initialIndexOf(rows, anchorNodeId));
   const [announcement, setAnnouncement] = useState("");
+  const [pickedFloor, setPickedFloor] = useState<string | null>(null);
 
-  const lastIndex = rows.length - 1;
-  const ready = rows.length > 0 && current >= lastIndex;
-  const remainder = remainderOf(rows, current, HandoffFrom);
+  const lastPathIndex = rows.length - 1;
+  const handoffIndex = rows.length;
+  const onHandoff = current === handoffIndex;
+  const ready = rows.length > 0 && current >= lastPathIndex;
+  const currentRow = onHandoff ? rows[lastPathIndex] : rows[current];
+  const stepFloor = displayFloorLabel(currentRow?.floorLabel);
+  const mapFloor =
+    pickedFloor ??
+    (stepFloor || (map?.floors[0] ?? "1F"));
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
@@ -373,22 +301,21 @@ export function RouteGuide({
   }, []);
 
   useEffect(() => {
-    const row = rows[current];
-    if (!row) return;
     const timer = setTimeout(() => {
-      setAnnouncement(announcementOf(row, current + 1, rows.length));
+      if (onHandoff) {
+        // 25 Copy「引き継ぎ / 補足（実行）」
+        setAnnouncement("ここから先は地図アプリが案内します");
+        return;
+      }
+      const row = rows[current];
+      if (row) setAnnouncement(announcementOf(row, current + 1, rows.length));
     }, 500);
     return () => clearTimeout(timer);
-  }, [current, rows]);
+  }, [current, onHandoff, rows]);
 
-  // 画面7「いまいる場所」が近くの地点を探す起点(RoomPage が保持する)。
   useEffect(() => {
-    const row = rows[current];
-    if (row) onCurrentNodeChange?.(row.nodeId);
-    // onCurrentNodeChange は呼び出し側の setState をそのまま渡す想定で、
-    // 呼び出しごとに新しい関数になっても再実行の要否は current/rows だけで決める。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current, rows]);
+    setPickedFloor(null);
+  }, [stepFloor]);
 
   function onScroll(event: UIEvent<HTMLDivElement>) {
     if (rafRef.current !== null) return;
@@ -405,23 +332,18 @@ export function RouteGuide({
 
   return (
     <div className={stylexClassName(styles.root)}>
-      <AppBar Title="経路" Back="Shown" />
-      {/* Handoff は App bar 直下に固定(スクロールしない)。出口への引き継ぎは
-          着く前から見えている、という SCREENS.md の決定どおり。 */}
-      <div className={stylexClassName(styles.handoffWrap)}>
-        <Handoff
-          State={ready ? "Ready" : "Waiting"}
-          From={HandoffFrom}
-          To={HandoffTo}
-          RemainderJa={remainder}
-          Uncertain={HandoffUncertain}
-          Reported={HandoffReported}
-          CorrectBusy={HandoffCorrectBusy}
-          CorrectError={HandoffCorrectError}
-          onOpenMap={onOpenMap}
-          onCorrect={onCorrectExit}
+      <AppBar Title="経路" Back="Hidden" />
+      {map ? (
+        <RouteMap
+          map={map}
+          floor={mapFloor}
+          currentNodeId={currentRow?.nodeId ?? null}
+          fromNodeId={focusSegment(rows, onHandoff ? lastPathIndex : current).fromNodeId}
+          toNodeId={focusSegment(rows, onHandoff ? lastPathIndex : current).toNodeId}
+          attributionJa={attributionJa}
+          onFloorChange={(next) => setPickedFloor(next)}
         />
-      </div>
+      ) : null}
       <div
         ref={scrollerRef}
         className={stylexClassName(styles.steps)}
@@ -434,6 +356,29 @@ export function RouteGuide({
               (カード側の .snap に z-index を与えて上に出す)。カード同士の
               隙間からだけ覗く。 */}
           <div className={stylexClassName(styles.spine)} aria-hidden="true" />
+          {/* 構内手順の末尾 = 逆順表示の先頭。Figma 画面6 / 25 Copy「引き継ぎ」。 */}
+          <div
+            data-step={handoffIndex}
+            className={stylexClassName(styles.snap)}
+            aria-current={onHandoff ? "step" : undefined}
+          >
+            <Handoff
+              State={ready ? "Ready" : "Waiting"}
+              From={HandoffFrom}
+              To={HandoffTo}
+              Uncertain={HandoffUncertain}
+              Reported={HandoffReported}
+              CorrectBusy={HandoffCorrectBusy}
+              CorrectError={HandoffCorrectError}
+              onOpenMap={onOpenMap}
+              onCorrect={onCorrectExit}
+            />
+            {onHandoff ? (
+              <div className={stylexClassName(styles.hereBadge)} aria-hidden="true">
+                <Icon Name="Navigation" Filled />
+              </div>
+            ) : null}
+          </div>
           {displayRows.map(({ row, index }) => (
             <div
               key={`${row.nodeId}-${index}`}
@@ -464,9 +409,6 @@ export function RouteGuide({
       <div aria-live="polite" className={stylexClassName(styles.visuallyHidden)}>
         {announcement}
       </div>
-      <BaseButton aria-label="いまいる場所" onClick={onOpenHere} className={stylexClassName(styles.openHere)}>
-        <Icon Name="Confirmed" />
-      </BaseButton>
       <TabBar Selected="Route" onSelect={onTabSelect} />
     </div>
   );

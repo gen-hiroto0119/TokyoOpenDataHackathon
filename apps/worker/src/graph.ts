@@ -73,7 +73,13 @@ export type DestinationCatalogEntry = {
   lng: number;
 };
 
+export type CatalogLine = {
+  id: string;
+  nameJa: string;
+};
+
 export type Catalog = {
+  lines: CatalogLine[];
   entries: EntryCatalogEntry[];
   meetings: MeetingCatalogEntry[];
   exits: ExitCatalogEntry[];

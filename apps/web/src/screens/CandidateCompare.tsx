@@ -1,5 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
@@ -15,6 +16,7 @@ import { TabBar, type TabBarSelected } from "../components/TabBar.js";
 export type CandidateCompareStatus = "loading" | "waiting" | "ready" | "error";
 
 export type CandidateCompareCandidate = {
+  catalogId: string | null;
   nodeId: string;
   Name: string;
   Floor: string;
@@ -48,9 +50,10 @@ export type CandidateCompareProps = {
   errorMessage?: string;
   /** 応答の infeasible[]。空なら何も出さない。 */
   infeasible?: CandidateCompareInfeasible[];
-  onChoose?: (nodeId: string) => void;
+  onChoose?: (catalogId: string) => void;
   onRetry?: () => void;
   onTabSelect?: (selected: TabBarSelected) => void;
+  onBack?: () => void;
 };
 
 const people: CandidatePersonProps[] = [
@@ -60,15 +63,6 @@ const people: CandidatePersonProps[] = [
 ];
 
 const styles = stylex.create({
-  root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
-  },
   content: {
     boxSizing: "border-box",
     display: "flex",
@@ -127,10 +121,11 @@ export function CandidateCompare({
   onChoose,
   onRetry,
   onTabSelect,
+  onBack,
 }: CandidateCompareProps) {
   if (status === undefined) {
     return (
-      <div className={stylexClassName(styles.root)}>
+      <div className={stylexClassName(screen.frame)}>
         <AppBar Title="集合場所の候補" Back="Shown" />
         <div className={stylexClassName(styles.content)}>
           <Candidate
@@ -164,8 +159,8 @@ export function CandidateCompare({
   }
 
   return (
-    <div className={stylexClassName(styles.root)}>
-      <AppBar Title="集合場所の候補" Back="Shown" />
+    <div className={stylexClassName(screen.frame)}>
+      <AppBar Title="集合場所の候補" Back={onBack ? "Shown" : "Hidden"} onBack={onBack} />
       <div className={stylexClassName(styles.content)}>
         {status === "loading" ? <Status State="Progress" /> : null}
         {status === "error" ? (
@@ -187,22 +182,25 @@ export function CandidateCompare({
           </div>
         ) : null}
         {status === "ready"
-          ? (candidates ?? []).map((c) => (
-              <Candidate
-                key={c.nodeId}
-                Name={c.Name}
-                Floor={c.Floor}
-                Reason={c.Reason}
-                Facts={c.Facts}
-                ShowElevator={c.ShowElevator}
-                ShowRestroom={c.ShowRestroom}
-                ShowStepFree={c.ShowStepFree}
-                State={c.Selected ? "Selected" : "Default"}
-                Action={Action}
-                People={c.People}
-                onChoose={() => onChoose?.(c.nodeId)}
-              />
-            ))
+          ? (candidates ?? []).map((c) => {
+              const catalogId = c.catalogId;
+              return (
+                <Candidate
+                  key={catalogId ?? c.nodeId}
+                  Name={c.Name}
+                  Floor={c.Floor}
+                  Reason={c.Reason}
+                  Facts={c.Facts}
+                  ShowElevator={c.ShowElevator}
+                  ShowRestroom={c.ShowRestroom}
+                  ShowStepFree={c.ShowStepFree}
+                  State={c.Selected ? "Selected" : "Default"}
+                  Action={catalogId ? Action : "Hidden"}
+                  People={c.People}
+                  onChoose={catalogId ? () => onChoose?.(catalogId) : undefined}
+                />
+              );
+            })
           : null}
         {infeasible.length > 0 ? (
           <div className={stylexClassName(styles.infeasible)}>

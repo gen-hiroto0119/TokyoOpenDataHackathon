@@ -10,6 +10,7 @@ const meta = {
   },
   args: {
     State: "Read",
+    ShowReader: true,
   },
   decorators: [
     (Story) => (

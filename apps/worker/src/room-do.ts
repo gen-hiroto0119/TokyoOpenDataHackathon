@@ -180,7 +180,7 @@ export class RoomObject {
         id: roomId,
         datasetId: "tokyo.shinjuku-terminal",
         destination: body.destination,
-        meetingNodeId: null,
+        meetingCatalogId: null,
         expiresAt,
         participants: [host],
         createdAt: iso,
@@ -281,7 +281,7 @@ export class RoomObject {
         if (body.expiresAt !== undefined) {
           stored.room.expiresAt = resolveExpiry(body.expiresAt, nowMs);
         }
-        if ("meetingNodeId" in body) stored.room.meetingNodeId = body.meetingNodeId ?? null;
+        if ("meetingCatalogId" in body) stored.room.meetingCatalogId = body.meetingCatalogId ?? null;
         stored.room.updatedAt = iso;
         await this.save(stored);
         return Response.json(stored.room);

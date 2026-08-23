@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { AppBar } from "../components/AppBar.js";
@@ -30,15 +30,6 @@ export type RoomCreateProps = {
 };
 
 const styles = stylex.create({
-  root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
-  },
   content: {
     boxSizing: "border-box",
     display: "flex",
@@ -107,7 +98,7 @@ export function RoomCreate({
 }: RoomCreateProps) {
   if (Mode === "Preview") {
     return (
-      <div className={stylexClassName(styles.root)}>
+      <div className={stylexClassName(screen.frame)}>
         <AppBar Title="ルーム作成" Back="Hidden" />
         <div className={stylexClassName(styles.content)}>
           <Field
@@ -128,7 +119,7 @@ export function RoomCreate({
             assistiveText="この時刻を過ぎるとルームは開けません"
             Content="Empty"
           />
-          <ArrivalInput State="Read" />
+          <ArrivalInput ShowReader={false} State="Read" />
           <Invite />
           <Participant Name="かいる" Detail="下書き" Initial="か" Role="Invitee" Progress="Opened" />
           <Participant
@@ -145,7 +136,7 @@ export function RoomCreate({
   }
 
   return (
-    <div className={stylexClassName(styles.root)}>
+    <div className={stylexClassName(screen.frame)}>
       <AppBar Title="ルーム作成" Back="Hidden" />
       <div className={stylexClassName(styles.content)}>
         <Field

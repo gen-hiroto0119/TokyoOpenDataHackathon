@@ -80,6 +80,11 @@ function buildGraph(): Graph {
 }
 
 const catalog: Catalog = {
+  lines: [
+    { id: "line.jr", nameJa: "JR" },
+    { id: "line.keio", nameJa: "京王" },
+    { id: "line.marunouchi", nameJa: "丸ノ内" },
+  ],
   entries: [
     { catalogId: "entry.jr.west", lineIds: ["line.jr"], nodeId: "g.jr.west", nameJa: "JR 西口改札" },
     { catalogId: "entry.jr.south", lineIds: ["line.jr"], nodeId: "g.jr.south", nameJa: "JR 南口改札" },

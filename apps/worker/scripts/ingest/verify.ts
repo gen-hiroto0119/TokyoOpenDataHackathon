@@ -20,8 +20,7 @@ export type VerifyInput = {
 };
 
 /**
- * 改札を持つ路線。src/index.ts の CATALOG_LINES と同じ集合でなければならない
- * （V7）。index.ts は Worker の口なのでここから import せず、集合を写す。
+ * 改札を持つ路線。catalog.lines と entries[].lineIds がこの集合と一致しなければならない（V7）。
  */
 export const EXPECTED_LINE_IDS = [
   "line.jr",
@@ -87,7 +86,7 @@ export function verify(input: VerifyInput): { checks: Check[]; allPass: boolean 
     inRange(counts.nodes, 1900, 2100) &&
       inRange(counts.links, 4700, 5200) &&
       inRange(counts.entries, 30, 60) &&
-      inRange(counts.meetings, 200, 420) &&
+      inRange(counts.meetings, 20, 150) &&
       inRange(counts.exits, 90, 200),
     JSON.stringify(counts),
   );
@@ -128,16 +127,21 @@ export function verify(input: VerifyInput): { checks: Check[]; allPass: boolean 
       `地上と地下の重複 ${report.exitsTwinDropped}、閉鎖中 ${report.exitsClosed.length}、境界ノードの無名出口 ${report.boundaryExits}`,
   );
 
-  // V5 東京都の名前の寄せ（報告のみ）
-  const sorted = [...report.snapDistancesM].sort((a, b) => a - b);
-  const median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)]! : 0;
+  // V5 集合候補の出どころ
+  const src = report.meetingSources;
+  const shopMeetings = catalog.meetings.filter((m) => (m.catalogId ?? "").startsWith("meet.tokyo.")).length;
   add(
     "V5",
-    "名前をノードへ寄せた距離（落とさない）",
-    true,
-    `中央値 ${median.toFixed(1)}m、最大 ${(sorted[sorted.length - 1] ?? 0).toFixed(1)}m、40m 以内に無くて外した ${report.unsnapped.length}` +
-      (report.unsnapped.length > 0 ? ` (${report.unsnapped.slice(0, 10).join(" / ")})` : "") +
-      `、階の表に無い ${report.tokyoNoLevel.length}、表の先頭に落とした ${report.tokyoLevelFallback}`,
+    "集合候補は改札・タクシー・国交省の店・バスタ前・手書きの大きな口。東京都の店は入れない",
+    src.taxi >= 2 &&
+      src.shop >= 1 &&
+      src.opening >= 1 &&
+      src.landmark >= 1 &&
+      src.gate >= 20 &&
+      shopMeetings === 0 &&
+      report.landmarksUnresolved.length === 0 &&
+      catalog.meetings.every((m) => !/^meet\.tokyo\./.test(m.catalogId ?? "")),
+    `出どころ ${JSON.stringify(src)}、東京都由来 ${shopMeetings}、バスタ統合 ${report.bustaMerged.length}、手書き未解決 ${report.landmarksUnresolved.join(" / ") || "なし"}`,
   );
 
   // V6 重複と閉鎖
@@ -158,10 +162,13 @@ export function verify(input: VerifyInput): { checks: Check[]; allPass: boolean 
   const expected = new Set<string>(EXPECTED_LINE_IDS);
   const missing = [...expected].filter((l) => !lineSet.has(l));
   const extra = [...lineSet].filter((l) => !expected.has(l));
+  const catalogLineIds = catalog.lines.map((l) => l.id);
+  const catalogMissing = [...expected].filter((l) => !catalogLineIds.includes(l));
+  const catalogExtra = catalogLineIds.filter((l) => !expected.has(l));
   add(
     "V7",
-    "改札の路線と CATALOG_LINES が一致する",
-    missing.length === 0 && extra.length === 0,
+    "改札の路線と catalog.lines が一致する",
+    missing.length === 0 && extra.length === 0 && catalogMissing.length === 0 && catalogExtra.length === 0,
     `改札の無い路線 ${missing.join(",") || "なし"}、一覧に無い路線 ${extra.join(",") || "なし"}`,
   );
 

@@ -6,6 +6,8 @@ import type {
   Leg,
   MeetingCandidate,
   RecommendationResponse,
+  RouteMap,
+  RouteResponse,
   Step,
   StepTurn,
   StepVertical,
@@ -24,6 +26,7 @@ export type PathRow = {
   Goal?: string;
   ShowGoal?: boolean;
   Icon: IconName;
+  floorLabel: string | null;
 };
 
 /**
@@ -151,6 +154,7 @@ export function rowsOfStep(step: Step, prevFloorLabel: string | null): PathRow[]
       Kind: "Move",
       Detail: moveDetail(step.distanceM),
       Icon: "Straight",
+      floorLabel: step.floorLabel,
     });
   }
 
@@ -175,6 +179,7 @@ export function rowsOfStep(step: Step, prevFloorLabel: string | null): PathRow[]
     Landmark: step.kind === "landmark" ? (step.nameJa ?? "") : undefined,
     Detail: detail,
     Icon: turnIcon(step.turn),
+    floorLabel: step.floorLabel,
   });
 
   return rows;
@@ -204,12 +209,16 @@ function dropEmptyLandmarkRows(rows: readonly PathRow[]): PathRow[] {
  * 自分の leg(改札→集合場所)と onward(集合場所→出口)を 1 本の手順列にする。
  * onward の先頭は集合場所そのものなので、leg の最終行と重複するときは飛ばす。
  *
- * 集合場所・出口の行の Landmark は candidate.meeting.nameJa / onward.exit.nameJa
+ * 集合場所・出口の行の Landmark は source.meeting.nameJa / onward.exit.nameJa
  * で上書きする。実データでは、経路の終端ノードは isLast だから kind:"landmark"
  * になるが、グラフ上のノード自体は無名(nameJa: null)なことがある
  * (名前はカタログ側にだけ付く)。Step.nameJa だけを見ると空欄になってしまう。
+ * MeetingCandidate も RouteResponse も meeting / onward を持つので、どちらも渡せる。
  */
-export function rowsOfLeg(candidate: MeetingCandidate, leg: Leg): PathRow[] {
+export function rowsOfLeg(
+  candidate: Pick<MeetingCandidate, "meeting" | "onward">,
+  leg: Leg,
+): PathRow[] {
   const onward = candidate.onward;
   let rows: PathRow[] = [];
   let prevFloor: string | null = null;
@@ -258,22 +267,134 @@ export function rowIndexOfNode(rows: readonly PathRow[], nodeId: string | null):
 // ---------------------------------------------------------------- 自分の leg の選択
 
 /**
- * ranked から自分の leg を選ぶ。確定済みの集合場所(room.meetingNodeId)と
- * meeting.nodeId が一致する候補を使う。未確定なら rank 1。
+ * ranked から自分の leg を選ぶ。確定済みの集合場所(room.meetingCatalogId)と
+ * meeting.catalogId が一致する候補を使う。未確定なら rank 1。
  */
 export function myLegOf(
   recs: RecommendationResponse,
-  meetingNodeId: string | null,
+  meetingCatalogId: string | null,
   participantId: string,
 ): { candidate: MeetingCandidate; leg: Leg } | null {
   const candidate =
-    (meetingNodeId !== null
-      ? recs.ranked.find((c) => c.meeting.nodeId === meetingNodeId)
+    (meetingCatalogId !== null
+      ? recs.ranked.find((c) => c.meeting.catalogId === meetingCatalogId)
       : undefined) ?? recs.ranked.find((c) => c.rank === 1);
   if (!candidate) return null;
   const leg = candidate.legs.find((l) => l.participantId === participantId);
   if (!leg) return null;
   return { candidate, leg };
+}
+
+/**
+ * GET /v1/rooms/:id/route の応答から自分の leg を選ぶ。1 地点分しか無いので
+ * 候補の選択は不要。legs に自分が無ければ null。
+ */
+export function myLegFromRoute(
+  route: RouteResponse,
+  participantId: string,
+): { route: RouteResponse; leg: Leg } | null {
+  const leg = route.legs.find((l) => l.participantId === participantId);
+  if (!leg) return null;
+  return { route, leg };
+}
+
+/** RouteResponse から手順行を作る。規則は rowsOfLeg と同じ。 */
+export function rowsOfRoute(route: RouteResponse, leg: Leg): PathRow[] {
+  return rowsOfLeg(route, leg);
+}
+
+const MAP_FLOOR_ORDER = ["B3F", "B2F", "B1F", "1F", "2F", "3F", "4F"] as const;
+
+function mergeRouteMaps(a: RouteMap, b: RouteMap): RouteMap {
+  const aMarks = a.marks ?? [];
+  const bMarks = b.marks ?? [];
+  const marks = [...aMarks];
+  const seen = new Set(aMarks.map((mark) => mark.nodeId));
+  for (const mark of bMarks) {
+    if (seen.has(mark.nodeId)) continue;
+    seen.add(mark.nodeId);
+    marks.push(mark);
+  }
+  const floors = [...(a.floors ?? []), ...(b.floors ?? [])];
+  const unique = [...new Set(floors.filter((floor) => floor.length > 0))];
+  const aPoints = a.points ?? [];
+  const bPoints = b.points ?? [];
+  const lastA = aPoints.at(-1)?.nodeId;
+  return {
+    floors: [
+      ...MAP_FLOOR_ORDER.filter((floor) => unique.includes(floor)),
+      ...unique.filter((floor) => !MAP_FLOOR_ORDER.includes(floor as (typeof MAP_FLOOR_ORDER)[number])),
+    ],
+    lines: [...(a.lines ?? []), ...(b.lines ?? [])],
+    connectors: [...(a.connectors ?? []), ...(b.connectors ?? [])],
+    marks,
+    points: [...aPoints, ...bPoints.filter((point) => point.nodeId !== lastA)],
+  };
+}
+
+export function displayFloorLabel(label: string | null | undefined): string {
+  if (!label) return "";
+  if (label === "B3" || label === "B2" || label === "B1") return `${label}F`;
+  if (label === "0" || label === "1") return "1F";
+  if (label.endsWith("F")) return label;
+  return `${label}F`;
+}
+
+/** いまの手順の次に来る曲がり・名前のある地点・出口。同じ node の直進行は飛ばす。 */
+export function nextFocusNodeId(rows: readonly PathRow[], currentIndex: number): string | null {
+  if (rows.length === 0) return null;
+  const i = Math.min(Math.max(currentIndex, 0), rows.length - 1);
+  const here = rows[i]!.nodeId;
+  for (let j = i + 1; j < rows.length; j++) {
+    const row = rows[j]!;
+    if (row.nodeId === here) continue;
+    if (row.Kind === "Landmark" || row.ShowGoal || row.Icon !== "Straight") {
+      return row.nodeId;
+    }
+  }
+  return null;
+}
+
+/** いまの手順の手前の地点。末尾（出口）では、ここに向かって来た向きを出す。 */
+export function prevFocusNodeId(rows: readonly PathRow[], currentIndex: number): string | null {
+  if (rows.length === 0) return null;
+  const i = Math.min(Math.max(currentIndex, 0), rows.length - 1);
+  const here = rows[i]!.nodeId;
+  for (let j = i - 1; j >= 0; j--) {
+    if (rows[j]!.nodeId !== here) return rows[j]!.nodeId;
+  }
+  return null;
+}
+
+/**
+ * 地図を寄せる Path 区間。直進の split 行は「この node へ向かう途中」なので
+ * 手前→いま。曲がり・地点の行は、いま→次の曲がり／出口。
+ */
+export function focusSegment(
+  rows: readonly PathRow[],
+  currentIndex: number,
+): { fromNodeId: string | null; toNodeId: string | null } {
+  if (rows.length === 0) return { fromNodeId: null, toNodeId: null };
+  const i = Math.min(Math.max(currentIndex, 0), rows.length - 1);
+  const here = rows[i]!;
+  const following = rows[i + 1];
+  const approaching =
+    here.Kind === "Move" && here.Icon === "Straight" && following?.nodeId === here.nodeId;
+  if (approaching) {
+    return { fromNodeId: prevFocusNodeId(rows, i), toNodeId: here.nodeId };
+  }
+  const next = nextFocusNodeId(rows, i);
+  if (next) return { fromNodeId: here.nodeId, toNodeId: next };
+  return { fromNodeId: prevFocusNodeId(rows, i), toNodeId: here.nodeId };
+}
+
+/** 自分の改札→集合と、集合→出口を 1 本の地図にする。 */
+export function mapOfRoute(route: RouteResponse, participantId: string): RouteMap | null {
+  if (!route.map) return null;
+  const mine = route.map.participants.find((row) => row.participantId === participantId);
+  if (!mine) return route.map.onward ?? null;
+  if (!route.map.onward) return mine;
+  return mergeRouteMaps(mine, route.map.onward);
 }
 
 // ---------------------------------------------------------------- Handoff

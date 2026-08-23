@@ -1,5 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
@@ -19,18 +20,10 @@ export type JoinConfirmProps = {
   onRetry?: () => void;
   /** トークンが無効になってここへ戻された(参加をやり直してください)。 */
   sessionExpired?: boolean;
+  onBack?: () => void;
 };
 
 const styles = stylex.create({
-  root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
-  },
   content: {
     boxSizing: "border-box",
     display: "flex",
@@ -63,11 +56,12 @@ export function JoinConfirm({
   error,
   onRetry,
   sessionExpired,
+  onBack,
 }: JoinConfirmProps) {
   const wired = onSubmit !== undefined;
   return (
-    <div className={stylexClassName(styles.root)}>
-      <AppBar Title="参加の確認" Back="Shown" />
+    <div className={stylexClassName(screen.frame)}>
+      <AppBar Title="参加の確認" Back={onBack ? "Shown" : "Hidden"} onBack={onBack} />
       <div className={stylexClassName(styles.content)}>
         {wired && sessionExpired ? (
           <p className={stylexClassName(type["UI/Small/Regular"], styles.notice)}>
@@ -82,7 +76,6 @@ export function JoinConfirm({
           onValueChange={onNameChange}
         />
         <Consent Kind="Route" />
-        <Consent Kind="Camera" />
         <Consent Kind="Expiry" />
         {wired && error ? <ErrorNotice onRetry={onRetry} /> : null}
         <div className={stylexClassName(styles.fill)}>

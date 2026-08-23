@@ -53,8 +53,9 @@ function copy(Kind: ConsentKind) {
       };
     case "Expiry":
       return {
-        title: "24時間で消えます",
-        description: "ルームと入力した内容は、作成から24時間で削除されます。それ以降は開けません。",
+        title: "6時間で消えます",
+        description:
+          "ルームと入力した内容は、作成から6時間で削除されます。期限は24時間先まで延ばせます。それ以降は開けません。",
       };
     default: {
       const _never: never = Kind;

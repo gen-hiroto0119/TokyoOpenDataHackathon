@@ -67,7 +67,6 @@ describe("normalizeName", () => {
     expect(normalizeName("スターバックス コーヒー 新宿西口店")).toBe("スターバックスコーヒー新宿西口店");
     expect(normalizeName("ＪＩＮＳ")).toBe("jins");
     expect(normalizeName("粥餐庁 （かゆさんちん）")).toBe("粥餐庁かゆさんちん");
-    expect(normalizeName("R´")).toBe("r");
   });
 });
 

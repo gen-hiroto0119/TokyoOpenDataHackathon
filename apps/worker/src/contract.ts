@@ -99,6 +99,25 @@ export const RecommendationRequestSchema = v.object({
   ),
 });
 
+const RouteMeetingCatalogRefSchema = v.object({
+  kind: v.literal("catalog", "集合場所が読めません"),
+  id: v.pipe(v.string("集合場所が読めません"), v.minLength(1, "集合場所が読めません")),
+});
+const RouteMeetingNodeRefSchema = v.object({
+  kind: v.literal("node", "集合場所が読めません"),
+  id: v.pipe(v.string("集合場所が読めません"), v.minLength(1, "集合場所が読めません")),
+});
+const RouteMeetingRefSchema = v.variant(
+  "kind",
+  [RouteMeetingCatalogRefSchema, RouteMeetingNodeRefSchema],
+  "集合場所が読めません",
+);
+
+export const RouteRequestSchema = v.object({
+  ...RecommendationRequestSchema.entries,
+  meeting: RouteMeetingRefSchema,
+});
+
 // POST /v1/exit-reports の入力を Valibot で検証する。catalogId がカタログの
 // 出口に無いかどうかは、ここではなく index.ts 側(dataset を持つ)で見る。
 const MAX_EXIT_REPORT_LABEL_LENGTH = 40;
@@ -250,6 +269,93 @@ export type RecommendationResponse = {
   walkingSpeedMps: number;
   ranked: MeetingCandidate[];
   infeasible: { nodeId: string; nameJa: string; reason: ReasonCode; textJa: string }[];
+};
+
+/** 候補比較用。経路の手順は route API だけが持つ。 */
+export type PublicLeg = Omit<Leg, "steps" | "pathNodeIds" | "pathLinkIds" | "confirmations">;
+
+export type PublicOnward = Omit<MeetingCandidate["onward"], "steps" | "pathNodeIds" | "pathLinkIds">;
+
+export type PublicMeetingCandidate = Omit<MeetingCandidate, "legs" | "onward"> & {
+  legs: PublicLeg[];
+  onward: PublicOnward;
+};
+
+export type PublicRecommendationResponse = Omit<RecommendationResponse, "ranked"> & {
+  ranked: PublicMeetingCandidate[];
+};
+
+export type RouteMeetingRef =
+  | { kind: "catalog"; id: string }
+  | { kind: "node"; id: string };
+
+export type RouteRequest = RecommendationRequest & {
+  meeting: RouteMeetingRef;
+};
+
+export type RouteMapMarkKind =
+  | "gate"
+  | "meeting"
+  | "exit"
+  | "turn"
+  | "stairs"
+  | "escalator"
+  | "elevator"
+  | "node";
+
+export type RouteMapLine = {
+  floor: string;
+  coordinates: [number, number][];
+};
+
+export type RouteMapConnector = {
+  kind: "stairs" | "escalator" | "elevator" | "ramp";
+  fromFloor: string | null;
+  toFloor: string | null;
+  coordinates: [number, number][];
+};
+
+export type RouteMapMark = {
+  kind: RouteMapMarkKind;
+  nodeId: string;
+  nameJa: string;
+  floor: string | null;
+  lng: number;
+  lat: number;
+};
+
+/** 歩行網の全点。いまの手順から次の曲がりまでを地図で寄せるために使う。 */
+export type RouteMapPoint = {
+  nodeId: string;
+  floor: string | null;
+  lng: number;
+  lat: number;
+};
+
+/** map-probe と同じ Path の線と点。階は B1F 形式。 */
+export type RouteMap = {
+  floors: string[];
+  lines: RouteMapLine[];
+  connectors: RouteMapConnector[];
+  marks: RouteMapMark[];
+  points: RouteMapPoint[];
+};
+
+export type RouteParticipantMap = RouteMap & { participantId: string };
+
+export type RouteResponse = {
+  dataset: RecommendationResponse["dataset"];
+  walkingSpeedMps: number;
+  rank: number;
+  meeting: MeetingCandidate["meeting"];
+  scores: MeetingCandidate["scores"];
+  reasons: MeetingCandidate["reasons"];
+  legs: MeetingCandidate["legs"];
+  onward: MeetingCandidate["onward"];
+  map: {
+    participants: RouteParticipantMap[];
+    onward: RouteMap;
+  };
 };
 
 /** GET /v1/landmarks。画面7「いまいる場所」が使う、近くの名前のある地点。 */

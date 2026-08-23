@@ -2,6 +2,7 @@ import { useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import type { RoomRole } from "worker/src/room.js";
 import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
@@ -9,6 +10,7 @@ import { AppBar } from "../components/AppBar.js";
 import { Arrival, type ArrivalProgress } from "../components/Arrival.js";
 import { Button } from "../components/Button.js";
 import { ErrorNotice } from "../components/ErrorNotice.js";
+import { Invite, type InviteState } from "../components/Invite.js";
 import { Place } from "../components/Place.js";
 import { Report, type ReportSelected } from "../components/Report.js";
 import { TabBar, type TabBarSelected } from "../components/TabBar.js";
@@ -40,18 +42,13 @@ export type RoomStatusProps = {
   /** 直前の解散が失敗した。 */
   dissolveError?: boolean;
   onTabSelect?: (selected: TabBarSelected) => void;
+  /** ホストだけ渡す。ゲストには出さない。 */
+  inviteLink?: string;
+  inviteState?: InviteState;
+  onInviteCopy?: () => void;
 };
 
 const styles = stylex.create({
-  root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
-  },
   content: {
     boxSizing: "border-box",
     display: "flex",
@@ -111,13 +108,16 @@ export function RoomStatus({
   onDissolve,
   dissolveError,
   onTabSelect,
+  inviteLink,
+  inviteState,
+  onInviteCopy,
 }: RoomStatusProps) {
   const wired = others !== undefined;
   const [confirmingDissolve, setConfirmingDissolve] = useState(false);
 
   if (!wired) {
     return (
-      <div className={stylexClassName(styles.root)}>
+      <div className={stylexClassName(screen.frame)}>
         <AppBar Title="ルーム" Back="Hidden" />
         <div className={stylexClassName(styles.content)}>
           <Place Kind="Meeting" Name="西口交番前" Detail="1階" Photo="Shown" />
@@ -155,10 +155,13 @@ export function RoomStatus({
   }
 
   return (
-    <div className={stylexClassName(styles.root)}>
+    <div className={stylexClassName(screen.frame)}>
       <AppBar Title="ルーム" Back="Hidden" />
       <div className={stylexClassName(styles.content)}>
         <Place Kind="Destination" Name={destinationName ?? ""} Detail="" Photo="Hidden" />
+        {inviteLink ? (
+          <Invite Link={inviteLink} State={inviteState} onCopy={onInviteCopy} />
+        ) : null}
         {me ? (
           <div className={stylexClassName(styles.me)}>
             <Arrival

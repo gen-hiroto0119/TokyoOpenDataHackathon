@@ -1,4 +1,4 @@
-// 駅あわせ Service Worker
+// あつまっぷ Service Worker
 //
 // 方針:
 // - ナビゲーション(HTML)は network-first。オフライン時のみキャッシュ済みの `/` を返す。

@@ -9,7 +9,11 @@ import type {
   RecommendationRequest,
   RecommendationResponse,
 } from "./contract.js";
-import { ExitReportRequestSchema, RecommendationRequestSchema } from "./contract.js";
+import {
+  ExitReportRequestSchema,
+  RecommendationRequestSchema,
+  RouteRequestSchema,
+} from "./contract.js";
 import type { Catalog, Dataset, Graph } from "./graph.js";
 import {
   RecommendError,
@@ -18,7 +22,13 @@ import {
   parseLandmarksRadiusM,
   recommend,
 } from "./recommend.js";
-import { buildRoomRecommendations, parseRoomRecommendationsLimit } from "./room-recommendations.js";
+import {
+  buildRoomRecommendations,
+  parseRoomRecommendationsLimit,
+  publicRecommendations,
+} from "./room-recommendations.js";
+import { attachRouteMap } from "./route-map.js";
+import { buildRoomRoute, pickRoute } from "./room-route.js";
 import {
   CreateRoomSchema,
   JoinSchema,
@@ -51,28 +61,10 @@ export function setDataset(next: Dataset): void {
   dataset = next;
 }
 
-/**
- * 改札を持つ路線をすべて出す(docs/RECOMMENDER.md「載っていない路線があると、
- * その人は参加できない」)。実データでは JR・京王・丸ノ内・小田急・大江戸・
- * 都営新宿・西武新宿の 7 つ。取り込み直しで 8 つ目が現れたら
- * catalog.test.ts のドリフト検知テストで落ちる。
- * line.shinjuku / line.seibu は国交省データの取り込み(MLIT ingest)が
- * まだ済んでおらず、apps/worker/data/catalog.json(旧・東京都データ)には
- * この2路線の改札が無い。catalog.test.ts はそこだけ it.todo にしている。
- */
-const CATALOG_LINES: CatalogResponse["lines"] = [
-  { id: "line.jr", nameJa: "JR" },
-  { id: "line.keio", nameJa: "京王" },
-  { id: "line.marunouchi", nameJa: "丸ノ内" },
-  { id: "line.odakyu", nameJa: "小田急" },
-  { id: "line.oedo", nameJa: "大江戸" },
-  { id: "line.shinjuku", nameJa: "都営新宿" },
-  { id: "line.seibu", nameJa: "西武新宿" },
-];
-
+/** 改札を持つ路線は catalog.lines。取り込み直しで増えたら catalog.test.ts が落ちる。 */
 function publicCatalog(ds: Dataset): CatalogResponse {
   return {
-    lines: CATALOG_LINES,
+    lines: ds.catalog.lines,
     destinations: ds.catalog.destinations,
   };
 }
@@ -166,7 +158,63 @@ app.post(
         : {}),
     };
     try {
-      return c.json(recommend(dataset, body));
+      return c.json(publicRecommendations(recommend(dataset, body)));
+    } catch (error) {
+      if (error instanceof RecommendError) {
+        return c.json(
+          error.details
+            ? { code: error.code, messageJa: error.messageJa, details: error.details }
+            : { code: error.code, messageJa: error.messageJa },
+          recommendErrorStatus(error.code),
+        );
+      }
+      throw error;
+    }
+  },
+);
+
+app.post(
+  "/v1/routes",
+  async (c, next) => {
+    try {
+      await c.req.json();
+    } catch {
+      return c.json({ code: "invalid_request" as const, messageJa: "JSON を読めません" }, 400);
+    }
+    await next();
+  },
+  vValidator("json", RouteRequestSchema, (result, c) => {
+    if (!result.success) {
+      const first = result.issues[0];
+      return c.json(
+        { code: "invalid_request" as const, messageJa: first?.message ?? "リクエストが読めません" },
+        400,
+      );
+    }
+  }),
+  async (c) => {
+    const parsed = c.req.valid("json");
+    const body: RecommendationRequest = {
+      datasetId: parsed.datasetId as RecommendationRequest["datasetId"],
+      destination: parsed.destination,
+      participants: parsed.participants.map((p) => ({
+        id: p.id,
+        entry: p.entry,
+        ...(p.confirmed ? { confirmed: p.confirmed } : {}),
+      })),
+      ...(parsed.constraints
+        ? {
+            constraints: {
+              ...(parsed.constraints.accessibility
+                ? { accessibility: parsed.constraints.accessibility }
+                : {}),
+              ...(parsed.constraints.asOf ? { asOf: parsed.constraints.asOf } : {}),
+            },
+          }
+        : {}),
+    };
+    try {
+      return c.json(attachRouteMap(dataset, pickRoute(recommend(dataset, body), parsed.meeting)));
     } catch (error) {
       if (error instanceof RecommendError) {
         return c.json(
@@ -333,7 +381,38 @@ const roomRoutes = app
     const limit = parseRoomRecommendationsLimit(c.req.query("limit"));
 
     try {
-      return c.json(buildRoomRecommendations(dataset, r.value, limit));
+      return c.json(publicRecommendations(buildRoomRecommendations(dataset, r.value, limit)));
+    } catch (error) {
+      if (error instanceof RecommendError) {
+        return c.json(
+          error.details
+            ? { code: error.code, messageJa: error.messageJa, details: error.details }
+            : { code: error.code, messageJa: error.messageJa },
+          recommendErrorStatus(error.code),
+        );
+      }
+      if (error instanceof RoomError) {
+        return c.json(
+          error.details
+            ? { code: error.code, messageJa: error.messageJa, details: error.details }
+            : { code: error.code, messageJa: error.messageJa },
+          statusOf(error.code),
+        );
+      }
+      throw error;
+    }
+  })
+
+  /**
+   * 決まっている集合場所の経路。保存しない。
+   * 中身は `buildRoomRoute`（純関数）。ここは HTTP の形に直すだけ。
+   */
+  .get("/v1/rooms/:id/route", async (c) => {
+    const r = await callRoom<Room>(c.env, c.req.param("id"), "/", { method: "GET" });
+    if (!r.ok) return c.json(r.error, statusOf(r.error.code));
+
+    try {
+      return c.json(buildRoomRoute(dataset, r.value));
     } catch (error) {
       if (error instanceof RecommendError) {
         return c.json(

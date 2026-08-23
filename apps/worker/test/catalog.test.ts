@@ -21,10 +21,8 @@ describe("GET /v1/catalog", () => {
       lines: { id: string; nameJa: string }[];
       destinations: { catalogId: string; nameJa: string; lat: number; lng: number }[];
     };
-    // 3路線(代表ケース)から5路線(東京都データ)を経て7路線(国交省データ)へ
-    // 意図的に更新。docs/RECOMMENDER.md「載っていない路線があると、その人は
-    // 参加できない」を受け、改札を持つ路線をすべて出すことにしたため
-    // (実データでは JR・京王・丸ノ内・小田急・大江戸・都営新宿・西武新宿)。
+    // 改札を持つ路線をすべて出す。実データでは JR・京王・丸ノ内・小田急・
+    // 大江戸・都営新宿・西武新宿。
     expect(body.lines.map((l) => l.id)).toEqual([
       "line.jr",
       "line.keio",
@@ -61,17 +59,6 @@ describe("GET /v1/catalog", () => {
     }
   });
 
-  /**
-   * ドリフト検知の逆方向: 一覧にある路線には改札が1つ以上ある(表示だけの
-   * 路線を作らない)。路線ごとに分けているのは、line.shinjuku(都営新宿)・
-   * line.seibu(西武新宿)の2つだけ現時点で成り立たないため。
-   *
-   * apps/worker/data/catalog.json はまだ国交省データの取り込み(MLIT ingest)
-   * 前で、旧・東京都データのまま(改札は JR・京王・丸ノ内・小田急・大江戸の
-   * 5路線ぶんしか無い)。この2路線は docs/RECOMMENDER.md の一覧(7路線)には
-   * 載るが、改札はまだ結べていない。正直に it.todo にして、MLIT の取り込みが
-   * 入って entries[].lineIds に現れたら有効化する。
-   */
   describe("ドリフト検知(逆方向): 一覧の各路線に改札が1つ以上ある", () => {
     const catalog = catalogJson as Catalog;
     const lineIdsWithGates = new Set<string>();
@@ -85,13 +72,11 @@ describe("GET /v1/catalog", () => {
       ["line.marunouchi", "丸ノ内"],
       ["line.odakyu", "小田急"],
       ["line.oedo", "大江戸"],
+      ["line.shinjuku", "都営新宿"],
+      ["line.seibu", "西武新宿"],
     ])("%s (%s) に改札がある", (lineId) => {
       expect(lineIdsWithGates.has(lineId)).toBe(true);
     });
-
-    // MLIT 取り込みが data/catalog.json を差し替えたら it.todo を外して有効化する。
-    it.todo("line.shinjuku (都営新宿) に改札がある — MLIT 取り込み後に有効化");
-    it.todo("line.seibu (西武新宿) に改札がある — MLIT 取り込み後に有効化");
   });
 });
 
@@ -117,6 +102,24 @@ describe("POST /v1/recommendations（F2: valibot による検証）", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ranked: unknown[] };
     expect(body.ranked.length).toBeGreaterThan(0);
+  });
+
+  it("手順と経路 ID は返さない", async () => {
+    const res = await post(validBody);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ranked: { legs: object[]; onward: object }[];
+    };
+    const first = body.ranked[0]!;
+    expect(first.legs[0]).not.toHaveProperty("steps");
+    expect(first.legs[0]).not.toHaveProperty("pathNodeIds");
+    expect(first.legs[0]).not.toHaveProperty("pathLinkIds");
+    expect(first.legs[0]).not.toHaveProperty("confirmations");
+    expect(first.onward).not.toHaveProperty("steps");
+    expect(first.onward).not.toHaveProperty("pathNodeIds");
+    expect(first.onward).not.toHaveProperty("pathLinkIds");
+    expect(first.onward).toHaveProperty("exit");
+    expect(first.onward).toHaveProperty("distanceM");
   });
 
   it("壊れた JSON は 400 invalid_request", async () => {
@@ -187,7 +190,7 @@ describe("POST /v1/exit-reports", () => {
   it("正しい入力は 202 を返し、ログに 1 行出すだけで保存しない", async () => {
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const res = await post({ catalogId: "exit.28994897", labelJa: "地下1出口" });
+      const res = await post({ catalogId: "exit.242583a94cd94ff7b213f5c4608e93f1", labelJa: "地下1出口" });
       expect(res.status).toBe(202);
       const body = (await res.json()) as { ok: boolean };
       expect(body.ok).toBe(true);
@@ -196,9 +199,9 @@ describe("POST /v1/exit-reports", () => {
       const logged = JSON.parse(spy.mock.calls[0]?.[0] as string) as Record<string, unknown>;
       expect(logged).toEqual({
         type: "exit_report",
-        catalogId: "exit.28994897",
+        catalogId: "exit.242583a94cd94ff7b213f5c4608e93f1",
         labelJa: "地下1出口",
-        was: "", // exit.28994897 の現在の label(取り込み時点)
+        was: "7",
       });
     } finally {
       spy.mockRestore();
@@ -213,7 +216,7 @@ describe("POST /v1/exit-reports", () => {
   });
 
   it("空の labelJa は 400 invalid_request", async () => {
-    const res = await post({ catalogId: "exit.28994929", labelJa: "" });
+    const res = await post({ catalogId: "exit.242583a94cd94ff7b213f5c4608e93f1", labelJa: "" });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("invalid_request");

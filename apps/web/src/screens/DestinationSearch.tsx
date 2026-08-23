@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
@@ -29,15 +30,6 @@ export type DestinationSearchProps = {
 };
 
 const styles = stylex.create({
-  root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
-  },
   content: {
     boxSizing: "border-box",
     display: "flex",
@@ -94,7 +86,7 @@ export function DestinationSearch({ destinations, onSelect, onBack }: Destinatio
 
   if (!wired) {
     return (
-      <div className={stylexClassName(styles.root)}>
+      <div className={stylexClassName(screen.frame)}>
         <AppBar Title="行き先" Back="Shown" />
         <div className={stylexClassName(styles.content)}>
           <div className={stylexClassName(styles.search)}>
@@ -137,7 +129,7 @@ export function DestinationSearch({ destinations, onSelect, onBack }: Destinatio
   const usingPlaces = hasPlacesKey() && trimmed.length >= 2 && placeResults.length > 0;
 
   return (
-    <div className={stylexClassName(styles.root)}>
+    <div className={stylexClassName(screen.frame)}>
       <AppBar Title="行き先" Back="Shown" onBack={onBack} />
       <div className={stylexClassName(styles.content)}>
         <div className={stylexClassName(styles.search)}>

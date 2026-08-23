@@ -68,7 +68,7 @@ export const UpdateRoomSchema = v.partial(
   v.object({
     destination: DestinationSchema,
     expiresAt: IsoDateSchema,
-    meetingNodeId: v.nullable(v.string()),
+    meetingCatalogId: v.nullable(v.string()),
   }),
 );
 
@@ -103,8 +103,8 @@ export type Room = {
   id: string;
   datasetId: "tokyo.shinjuku-terminal";
   destination: Destination;
-  /** 主催者が決めた集合場所。決まるまで null。 */
-  meetingNodeId: string | null;
+  /** 主催者が決めた集合場所の catalogId。決まるまで null。 */
+  meetingCatalogId: string | null;
   expiresAt: string;
   participants: Participant[];
   createdAt: string;

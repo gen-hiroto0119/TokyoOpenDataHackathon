@@ -74,7 +74,7 @@ describe("P1: 経路の連続性と向き", () => {
         }
       }
     }
-    expect(legCount).toBe(726); // 242 候補 × 参加者3人
+    expect(legCount).toBe(216); // 72 候補 × 参加者3人
   });
 });
 
@@ -122,11 +122,20 @@ describe("P3: 片方向辺の固定ケース", () => {
     expect(top.onward.pathNodeIds).toEqual(["m.meet", "e.west"]);
   });
 
-  it("実データ: meet.29008226 の onward が片方向辺を使う（real-golden.test.ts の G9 と共用）", () => {
+  it("実データ: いずれかの onward が片方向辺を使う", () => {
+    const pairs = new Set(dataset.graph.links.map((l) => `${l.from}\t${l.to}`));
     const res = recommend(dataset, representative);
-    const cand = res.ranked.find((r) => r.meeting.catalogId === "meet.29008226")!;
-    const i = cand.onward.pathNodeIds.indexOf("11114909");
-    expect(cand.onward.pathNodeIds[i + 1]).toBe("11110818");
+    const usedOneWay = res.ranked.some((cand) =>
+      cand.onward.pathNodeIds.some((nodeId, i) => {
+        const next = cand.onward.pathNodeIds[i + 1];
+        return (
+          next !== undefined &&
+          pairs.has(`${nodeId}\t${next}`) &&
+          !pairs.has(`${next}\t${nodeId}`)
+        );
+      }),
+    );
+    expect(usedOneWay).toBe(true);
   });
 });
 
@@ -218,7 +227,7 @@ describe("P6: steps の不変条件", () => {
 describe("P7: confirmations", () => {
   it("先頭は gate、末尾は集合地点、全点が経路上、重複なし", () => {
     const res = recommend(dataset, representative);
-    // 実測の内訳（726 legs）: 末尾の kind は landmark 708 / gate 16 / branch 2。
+    // 実測の内訳（216 legs）: 末尾の kind は landmark / gate / branch。
     // buildConfirmations は同じ nodeId を二重登録しないため、集合地点そのものが
     // 改札（経路長1、16件）や次数3以上の分岐点（2件）を兼ねると、末尾は
     // landmark に昇格されず先に付いた kind のまま残る。nodeId は常に一致する。
@@ -240,7 +249,7 @@ describe("P7: confirmations", () => {
         }
       }
     }
-    expect(lastKindCounts).toEqual({ landmark: 708, gate: 16, branch: 2 });
+    expect(lastKindCounts).toEqual({ landmark: 138, gate: 18, branch: 60 });
   });
 });
 

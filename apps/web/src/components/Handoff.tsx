@@ -19,7 +19,7 @@ export type HandoffProps = {
   /** 今の区間の到達点と残り距離(例: 「集合場所まで 120m · 西口交番前」
    * 「出口 8 まで 60m」)。画面6の現在行に追従して変わる。無指定なら出さない。 */
   RemainderJa?: string;
-  /** 出口の名前が hypothesis(未確認)のとき、断定しない補足行を出す。 */
+  /** 呼び出し側が渡すが、未確認の注釈行は出さない。 */
   Uncertain?: boolean;
   /** 「表示が違う」の送信がすでに済んだ。入力欄の代わりに送信済みの表示にする。 */
   Reported?: boolean;
@@ -97,10 +97,6 @@ const styles = stylex.create({
   to: {
     margin: 0,
     color: color["--color-text-primary"],
-  },
-  uncertain: {
-    margin: 0,
-    color: color["--color-text-secondary"],
   },
   note: {
     margin: 0,
@@ -216,15 +212,6 @@ function correctionForm(
   );
 }
 
-function uncertainSlot(Uncertain: boolean) {
-  if (!Uncertain) return null;
-  return (
-    <p className={stylexClassName(type["UI/Small/Regular"], styles.uncertain)}>
-      出口の名前は未確認です。現地の看板を確かめてください
-    </p>
-  );
-}
-
 function remainderSlot(RemainderJa: string | undefined) {
   if (!RemainderJa) return null;
   return <p className={stylexClassName(type["UI/Small/Regular"], styles.remainder)}>{RemainderJa}</p>;
@@ -235,7 +222,6 @@ export function Handoff({
   From = "出口 8 を出たところから",
   To = "東京都庁",
   RemainderJa,
-  Uncertain = false,
   Reported = false,
   CorrectBusy = false,
   CorrectError = false,
@@ -260,7 +246,6 @@ export function Handoff({
         </div>
         {remainderSlot(RemainderJa)}
         <p className={stylexClassName(type["Wayfinding/Landmark"], styles.to)}>{To}</p>
-        {uncertainSlot(Uncertain)}
       </div>
       {correctionForm(open, Reported, draft, setDraft, CorrectBusy, CorrectError, submit)}
       <p className={stylexClassName(type["UI/Small/Regular"], styles.note)}>{noteCopy(State)}</p>

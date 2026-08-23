@@ -1,5 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
@@ -50,26 +51,21 @@ const meetingAppear = stylex.keyframes({
 
 const styles = stylex.create({
   root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
     paddingTop: 72,
   },
   signature: {
     position: "relative",
-    width: 390,
+    width: "100%",
+    maxWidth: 390,
     height: 240,
+    alignSelf: "center",
     flexShrink: 0,
     overflow: "hidden",
     color: color["--color-text-primary"],
   },
   routes: {
     display: "block",
-    width: 390,
+    width: "100%",
     height: 240,
     pointerEvents: "none",
   },
@@ -201,7 +197,7 @@ function Signature() {
 
 export function GettingStarted({ onStart }: GettingStartedProps) {
   return (
-    <div className={stylexClassName(styles.root)}>
+    <div className={stylexClassName(screen.frame, styles.root)}>
       <Signature />
       <div className={stylexClassName(styles.copy)}>
         <h1 className={stylexClassName(type["Wayfinding/Landmark"], styles.title)}>

@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { AppBar } from "../components/AppBar.js";
@@ -7,6 +7,7 @@ import { ArrivalInput } from "../components/ArrivalInput.js";
 import { Button } from "../components/Button.js";
 import { ErrorNotice } from "../components/ErrorNotice.js";
 import type { FieldSelectOption } from "../components/FieldSelect.js";
+import { Invite, type InviteState } from "../components/Invite.js";
 import { Place } from "../components/Place.js";
 
 export type ArrivalInfoProps = {
@@ -20,18 +21,13 @@ export type ArrivalInfoProps = {
   submitDisabled?: boolean;
   error?: boolean;
   onRetry?: () => void;
+  /** ホストだけ渡す。ゲストには出さない。 */
+  inviteLink?: string;
+  inviteState?: InviteState;
+  onInviteCopy?: () => void;
 };
 
 const styles = stylex.create({
-  root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
-  },
   content: {
     boxSizing: "border-box",
     display: "flex",
@@ -61,17 +57,23 @@ export function ArrivalInfo({
   submitDisabled,
   error,
   onRetry,
+  inviteLink,
+  inviteState,
+  onInviteCopy,
 }: ArrivalInfoProps) {
   const wired = onSubmit !== undefined;
   return (
-    <div className={stylexClassName(styles.root)}>
-      <AppBar Title="到着情報" Back="Shown" />
+    <div className={stylexClassName(screen.frame)}>
+      <AppBar Title="到着情報" Back="Hidden" />
       <div className={stylexClassName(styles.content)}>
         {wired ? (
           <Place Kind="Destination" Name={destinationName ?? ""} Detail="" Photo="Hidden" />
         ) : (
           <Place Kind="Destination" Name="東京都庁" Detail="新宿区西新宿2-8-1" Photo="Shown" />
         )}
+        {inviteLink ? (
+          <Invite Link={inviteLink} State={inviteState} onCopy={onInviteCopy} />
+        ) : null}
         {wired ? (
           <ArrivalInput
             ShowReader={false}
@@ -81,7 +83,7 @@ export function ArrivalInfo({
             onValueChange={onLineChange}
           />
         ) : (
-          <ArrivalInput State="Read" />
+          <ArrivalInput ShowReader={false} State="Read" />
         )}
         {wired && error ? <ErrorNotice onRetry={onRetry} /> : null}
         <div className={stylexClassName(styles.fill)}>

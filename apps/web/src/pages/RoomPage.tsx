@@ -5,14 +5,19 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import * as stylex from "@stylexjs/stylex";
 import { color } from "../tokens/color.stylex.js";
+import { screen } from "../tokens/layout.stylex.js";
 import { stylexClassName } from "../stylex-class-name.js";
 import { ApiError, api } from "../api.js";
 import { AppBar } from "../components/AppBar.js";
 import { Button } from "../components/Button.js";
+import type { InviteState } from "../components/Invite.js";
 import type { ReportSelected } from "../components/Report.js";
 import { Status } from "../components/Status.js";
 import { TabBar, type TabBarSelected } from "../components/TabBar.js";
 import {
+  arrivalDetailOf,
+  assignedGateLegsOf,
+  assignedGateNameOf,
   effortLabel,
   factsLabel,
   initialOf,
@@ -24,14 +29,13 @@ import {
   reportOf,
   reportSelectedOf,
 } from "../room-view.js";
-import { fallbackAnchorNodeId, handoffFrom, hereRowsOf, myLegOf, rowsOfLeg } from "../route-view.js";
+import { fallbackAnchorNodeId, handoffFrom, mapOfRoute, myLegFromRoute, rowsOfRoute } from "../route-view.js";
 import { ArrivalInfo } from "../screens/ArrivalInfo.js";
 import {
   CandidateCompare,
   type CandidateCompareCandidate,
   type CandidateCompareInfeasible,
 } from "../screens/CandidateCompare.js";
-import { Here } from "../screens/Here.js";
 import { JoinConfirm } from "../screens/JoinConfirm.js";
 import { RouteGuide } from "../screens/RouteGuide.js";
 import { RoomStatus } from "../screens/RoomStatus.js";
@@ -44,26 +48,18 @@ import {
   saveSession,
 } from "../session.js";
 import {
-  primeRoomRecommendations,
   useCatalog,
-  useLandmarks,
   useRoom,
   useRoomRecommendations,
+  useRoomRoute,
 } from "../swr.js";
 import { useRoomSocket } from "../ws.js";
 
 const shellStyles = stylex.create({
   root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
     gap: 16,
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
     padding: 24,
     textAlign: "center",
   },
@@ -81,7 +77,7 @@ function TerminalScreen({
   onCreateNew: () => void;
 }) {
   return (
-    <div className={stylexClassName(shellStyles.root)}>
+    <div className={stylexClassName(screen.frame, shellStyles.root)}>
       <p className={stylexClassName(shellStyles.message)}>{message}</p>
       <Button Label="新しいルームを作る" Size="Large" Style="Primary" onClick={onCreateNew} />
     </div>
@@ -89,15 +85,6 @@ function TerminalScreen({
 }
 
 const routeStyles = stylex.create({
-  root: {
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-    width: 390,
-    height: 844,
-    overflow: "hidden",
-    backgroundColor: color["--color-surface-shell"],
-  },
   content: {
     boxSizing: "border-box",
     display: "flex",
@@ -118,14 +105,16 @@ function RouteStatusScreen({
   state,
   onRetry,
   onTabSelect,
+  onBack,
 }: {
   state: "loading" | "error";
   onRetry?: () => void;
   onTabSelect?: (selected: TabBarSelected) => void;
+  onBack?: () => void;
 }) {
   return (
-    <div className={stylexClassName(routeStyles.root)}>
-      <AppBar Title="経路" Back="Shown" />
+    <div className={stylexClassName(screen.frame)}>
+      <AppBar Title="経路" Back={onBack ? "Shown" : "Hidden"} onBack={onBack} />
       <div className={stylexClassName(routeStyles.content)}>
         <Status State={state === "loading" ? "Progress" : "Failed"} onRetry={onRetry} />
       </div>
@@ -148,7 +137,27 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   const [terminal, setTerminal] = useState<Terminal>(null);
   const [session, setSession] = useState<Session | null>(() => loadSession(roomId));
   const [rejoinNotice, setRejoinNotice] = useState(false);
-  const [tab, setTab] = useState<TabBarSelected>("Room");
+  // 路線が入ったあとは経路タブから始める。候補と比較まで自分でたどり着けるようにする。
+  const [tab, setTab] = useState<TabBarSelected>("Route");
+  const [inviteCopiedAt, setInviteCopiedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (inviteCopiedAt === null) return;
+    const id = window.setTimeout(() => setInviteCopiedAt(null), 2500);
+    return () => window.clearTimeout(id);
+  }, [inviteCopiedAt]);
+
+  const inviteLink = `${location.origin}/r/${roomId}`;
+  const inviteState: InviteState = inviteCopiedAt !== null ? "Copied" : "Default";
+
+  async function handleInviteCopy() {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      setInviteCopiedAt(Date.now());
+    } catch {
+      // コピーできなくてもボタンは Default のまま。
+    }
+  }
 
   const { data: room, error: roomError, mutate: mutateRoom } = useRoom(terminal ? null : roomId);
   useRoomSocket(terminal ? null : roomId);
@@ -298,74 +307,41 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   }
 
   // ---------------------------------------------------------- 画面5: 集合候補
+  // 集合場所が決まっているときは候補一覧を取らない。経路は route API だけ。
   const {
     data: recs,
     error: recsError,
     mutate: mutateRecs,
-  } = useRoomRecommendations(terminal || !room ? null : roomId, room?.updatedAt);
+  } = useRoomRecommendations(
+    terminal || !room || room.meetingCatalogId !== null ? null : roomId,
+    room?.updatedAt,
+  );
 
-  async function handleChoose(nodeId: string) {
+  // 画面6: 集合場所が決まっているときだけ 1 地点の経路を取る。
+  const {
+    data: route,
+    error: routeError,
+    mutate: mutateRoute,
+  } = useRoomRoute(
+    terminal || !room ? null : roomId,
+    room?.meetingCatalogId ?? null,
+    room?.updatedAt,
+  );
+
+  async function handleChoose(catalogId: string) {
     if (!session) return;
     try {
-      const updated = await api.updateRoom(roomId, { meetingNodeId: nodeId }, session.token);
+      const updated = await api.updateRoom(roomId, { meetingCatalogId: catalogId }, session.token);
       await mutateRoom(updated, { revalidate: false });
     } catch (error) {
       handleUnauthorized(error);
     }
   }
 
-  // ---------------------------------------------------- 画面6/7: 自分の経路・いまいる場所
-  const [hereOpen, setHereOpen] = useState(false);
-  const [anchorNodeId, setAnchorNodeId] = useState<string | null>(null);
-  // 画面6でいま表示している手順のノード。RouteGuide がスクロール位置から
-  // 都度報告する(onCurrentNodeChange)。画面7を開くとき、この点を起点に
-  // 近くの地点(GET /v1/landmarks)を探す。
-  const [currentRouteNodeId, setCurrentRouteNodeId] = useState<string | null>(null);
-  const [confirmBusy, setConfirmBusy] = useState(false);
-  const [confirmError, setConfirmError] = useState(false);
-  const [lastConfirmNodeId, setLastConfirmNodeId] = useState<string | null>(null);
+  // ---------------------------------------------------- 画面6: 自分の経路
   const [exitReport, setExitReport] = useState(() => loadExitReport(roomId));
   const [correctingExit, setCorrectingExit] = useState(false);
   const [correctExitError, setCorrectExitError] = useState(false);
-
-  const {
-    data: landmarksData,
-    error: landmarksError,
-    mutate: mutateLandmarks,
-  } = useLandmarks(hereOpen ? currentRouteNodeId : null);
-
-  async function handleConfirmHere(nodeId: string) {
-    if (!session) return;
-    setLastConfirmNodeId(nodeId);
-    setConfirmBusy(true);
-    setConfirmError(false);
-    try {
-      const updatedRoom = await api.updateParticipant(
-        roomId,
-        session.participantId,
-        { confirmed: { kind: "node", id: nodeId } },
-        session.token,
-      );
-      await mutateRoom(updatedRoom, { revalidate: false });
-      try {
-        // 新しい updatedAt の推薦キーへ先回りしておく。失敗しても致命的ではない
-        // — 画面6側の useRoomRecommendations が通常のフェッチでリカバーする。
-        await primeRoomRecommendations(roomId, updatedRoom.updatedAt);
-      } catch {
-        // no-op
-      }
-      setAnchorNodeId(nodeId);
-      setHereOpen(false);
-    } catch (error) {
-      if (!handleUnauthorized(error)) setConfirmError(true);
-    } finally {
-      setConfirmBusy(false);
-    }
-  }
-
-  function handleRetryConfirmHere() {
-    if (lastConfirmNodeId) void handleConfirmHere(lastConfirmNodeId);
-  }
 
   async function handleCorrectExit(exitCatalogId: string, labelJa: string) {
     setCorrectingExit(true);
@@ -394,7 +370,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   if (!room) {
     // 読み込み中。localStorage のキャッシュがあれば keepPreviousData が
     // ここへ来る前に埋める(地下対策)。
-    return <div className={stylexClassName(shellStyles.root)} />;
+    return <div className={stylexClassName(screen.frame)} />;
   }
 
   if (!session) {
@@ -407,6 +383,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
         error={joinError}
         onRetry={handleJoin}
         sessionExpired={rejoinNotice}
+        onBack={() => navigate("/")}
       />
     );
   }
@@ -414,7 +391,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
   if (!me) {
     // room.participants との突き合わせが済むまでの一瞬。useEffect が
     // セッションを消すので、すぐ上の分岐に落ちる。
-    return <div className={stylexClassName(shellStyles.root)} />;
+    return <div className={stylexClassName(screen.frame)} />;
   }
 
   if (me.entry === null) {
@@ -432,16 +409,24 @@ function RoomPageInner({ roomId }: { roomId: string }) {
         submitDisabled={savingEntry || !lineId}
         error={entryError}
         onRetry={handleSaveEntry}
+        inviteLink={session.role === "host" ? inviteLink : undefined}
+        inviteState={inviteState}
+        onInviteCopy={handleInviteCopy}
       />
     );
   }
 
   if (tab === "Room") {
     const lines = catalog?.lines ?? [];
+    const gateLegs = assignedGateLegsOf(
+      room.meetingCatalogId !== null,
+      recs?.kind === "ready" ? recs.data.ranked[0]?.legs : undefined,
+      route?.kind === "ready" ? route.data.legs : undefined,
+    );
     const meView = {
       id: me.id,
       Name: me.nameJa,
-      Detail: lineNameOf(lines, me.entry),
+      Detail: arrivalDetailOf(lineNameOf(lines, me.entry), assignedGateNameOf(gateLegs, me.id)),
       Initial: initialOf(me.nameJa),
       Progress: progressOf(me),
       ShowReport: me.report !== null,
@@ -452,7 +437,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
       .map((p) => ({
         id: p.id,
         Name: p.nameJa,
-        Detail: lineNameOf(lines, p.entry),
+        Detail: arrivalDetailOf(lineNameOf(lines, p.entry), assignedGateNameOf(gateLegs, p.id)),
         Initial: initialOf(p.nameJa),
         Progress: progressOf(p),
         ShowReport: p.report !== null,
@@ -471,47 +456,49 @@ function RoomPageInner({ roomId }: { roomId: string }) {
         onDissolve={handleDissolve}
         dissolveError={dissolveError}
         onTabSelect={setTab}
+        inviteLink={session.role === "host" ? inviteLink : undefined}
+        inviteState={inviteState}
+        onInviteCopy={handleInviteCopy}
       />
     );
   }
 
   // tab === "Route"
-  if (room.meetingNodeId !== null) {
-    // 集合場所が決まっている: 画面5(候補比較)ではなく画面6/7(自分の経路)。
-    if (recsError) {
-      return <RouteStatusScreen state="error" onRetry={() => void mutateRecs()} onTabSelect={setTab} />;
-    }
-    if (!recs || recs.kind === "waiting") {
-      return <RouteStatusScreen state="loading" onTabSelect={setTab} />;
-    }
-    const my = myLegOf(recs.data, room.meetingNodeId, me.id);
-    if (!my) {
-      return <RouteStatusScreen state="error" onRetry={() => void mutateRecs()} onTabSelect={setTab} />;
-    }
-
-    if (hereOpen) {
+  if (room.meetingCatalogId !== null) {
+    // 集合場所が決まっている: 画面5(候補比較)ではなく画面6(自分の経路)。
+    if (routeError) {
       return (
-        <Here
-          Kind="List"
-          rows={landmarksData ? hereRowsOf(landmarksData.landmarks) : []}
-          loading={!landmarksData && !landmarksError}
-          loadError={!!landmarksError}
-          busy={confirmBusy}
-          error={confirmError}
-          onBack={() => setHereOpen(false)}
-          onConfirm={handleConfirmHere}
-          onRetry={handleRetryConfirmHere}
-          onRetryLoad={() => void mutateLandmarks()}
+        <RouteStatusScreen
+          state="error"
+          onRetry={() => void mutateRoute()}
+          onTabSelect={setTab}
+          onBack={() => setTab("Room")}
+        />
+      );
+    }
+    if (!route || route.kind === "waiting") {
+      return <RouteStatusScreen state="loading" onTabSelect={setTab} onBack={() => setTab("Room")} />;
+    }
+    const my = myLegFromRoute(route.data, me.id);
+    if (!my) {
+      return (
+        <RouteStatusScreen
+          state="error"
+          onRetry={() => void mutateRoute()}
+          onTabSelect={setTab}
+          onBack={() => setTab("Room")}
         />
       );
     }
 
-    const effectiveAnchor = anchorNodeId ?? fallbackAnchorNodeId(my.leg.confirmations);
-    const exit = my.candidate.onward.exit;
+    const effectiveAnchor = fallbackAnchorNodeId(my.leg.confirmations);
+    const exit = my.route.onward.exit;
     return (
       <RouteGuide
         key={effectiveAnchor ?? "start"}
-        rows={rowsOfLeg(my.candidate, my.leg)}
+        rows={rowsOfRoute(my.route, my.leg)}
+        map={mapOfRoute(my.route, me.id)}
+        attributionJa={my.route.dataset.attributionJa}
         anchorNodeId={effectiveAnchor}
         HandoffFrom={handoffFrom(exit.label)}
         HandoffTo={room.destination.nameJa}
@@ -521,9 +508,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
         HandoffCorrectError={correctExitError}
         onOpenMap={() => window.open(exit.mapsDirUrl, "_blank", "noopener,noreferrer")}
         onCorrectExit={(labelJa) => void handleCorrectExit(exit.catalogId, labelJa)}
-        onOpenHere={() => setHereOpen(true)}
         onTabSelect={setTab}
-        onCurrentNodeChange={setCurrentRouteNodeId}
       />
     );
   }
@@ -562,6 +547,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
     } else {
       status = "ready";
       candidates = recs.data.ranked.map((c, index) => ({
+        catalogId: c.meeting.catalogId,
         nodeId: c.meeting.nodeId,
         Name: c.meeting.nameJa,
         Floor: c.meeting.floorLabel,
@@ -577,7 +563,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
           Minutes: minutesLabel(leg.costSeconds),
           Effort: effortLabel(leg.floorChanges, leg.branchCount),
         })),
-        Selected: room.meetingNodeId !== null && c.meeting.nodeId === room.meetingNodeId,
+        Selected: room.meetingCatalogId !== null && c.meeting.catalogId === room.meetingCatalogId,
       }));
     }
   }
@@ -593,6 +579,7 @@ function RoomPageInner({ roomId }: { roomId: string }) {
       onChoose={handleChoose}
       onRetry={() => void mutateRecs()}
       onTabSelect={setTab}
+      onBack={() => setTab("Room")}
     />
   );
 }

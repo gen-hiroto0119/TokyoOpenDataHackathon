@@ -10,7 +10,7 @@ const meta = {
     State: { control: "select", options: ["Default", "Copied", "Disabled"] },
   },
   args: {
-    Link: "駅あわせ.example/join/nishi-1",
+    Link: "あつまっぷ.example/join/nishi-1",
     State: "Default",
   },
   decorators: [

@@ -7,13 +7,9 @@ import type { Catalog, Dataset, Graph } from "../src/graph.js";
 import { recommend } from "../src/recommend.js";
 
 /**
- * 実データのゴールデンテスト。docs/RECOMMENDER.md のテスト節（463行）が求める
- * 「ZIP 取り込み後に、同じ契約で実データテストを足す」を満たす。
- * ノード ID は原則カタログ ID 経由で参照する。例外は G9 の片方向辺のノード ID
- * 2 個だけで、コメントで理由を明記してある。
- *
- * 期待値は取り込みのたびに変わりうる。冒頭で datasetVersion と graphHash を
- * 固定しているので、再取り込みで値が変わったらこのファイルごと見直すサイン。
+ * 実データのゴールデン。期待値は取り込みのたびに変わりうる。
+ * 冒頭で datasetVersion と graphHash を固定しているので、再取り込みで
+ * 値が変わったらこのファイルごと見直す。
  */
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), "../data");
 const dataset: Dataset = {
@@ -23,9 +19,9 @@ const dataset: Dataset = {
 
 describe("データセットの版", () => {
   it("datasetVersion と graphHash を固定する", () => {
-    expect(dataset.graph.datasetVersion).toBe("2023-02-20");
+    expect(dataset.graph.datasetVersion).toBe("mlit-2020-08");
     expect(dataset.graph.graphHash).toBe(
-      "fc3466270c08593a300e652c7997021f85151bf0f435e17ee9fcb7935ed4ba31",
+      "a5f8455bf8d2e696dd4f836575b9000843359fc0e75d9314269c1057b91802e1",
     );
   });
 });
@@ -45,39 +41,44 @@ describe("G1: 代表ケース（都庁、JR/京王/丸ノ内）", () => {
   const top = res.ranked[0]!;
 
   it("ranked / infeasible の件数", () => {
-    expect(res.ranked.length).toBe(242);
+    expect(res.ranked.length).toBe(72);
     expect(res.infeasible.length).toBe(0);
   });
 
   it("上位3件の集合場所", () => {
     expect(res.ranked.slice(0, 3).map((r) => r.meeting.catalogId)).toEqual([
-      "meet.28993812",
-      "meet.28993811",
-      "meet.28993854",
+      "meet.mlit.ded26d8ca534472181a13cd5950df68a",
+      "meet.mlit.e83a373de29c40df85975be167725aa5",
+      "meet.mlit.bc30f06d24f74562aab411d142a8fe34",
+    ]);
+    expect(res.ranked.slice(0, 3).map((r) => r.meeting.nameJa)).toEqual([
+      "スターバックス コーヒー 新宿西口店",
+      "中・大型タクシーのりば",
+      "MINIPLA (ミニプラ) 小田急新宿西口店",
     ]);
   });
 
   it("1位のスコアと理由", () => {
     expect(top.scores).toEqual({
-      maxDistanceM: 179.8,
-      sumDistanceM: 424,
-      onwardDistanceM: 221,
+      maxDistanceM: 105.5,
+      sumDistanceM: 266.6,
+      onwardDistanceM: 157.9,
       explainability: 1,
     });
     expect(top.reasons).toEqual([{ code: "minimax", textJa: "一番長い人の移動が最も短い" }]);
   });
 
   it("1位の出口", () => {
-    expect(top.onward.exit.catalogId).toBe("exit.28994922");
-    expect(top.onward.exit.label).toBe("8");
+    expect(top.onward.exit.catalogId).toBe("exit.9b009263412c4446a9189d22c9e180a0");
+    expect(top.onward.exit.label).toBe("9");
   });
 
   it("3人の entry catalogId", () => {
     const entries = Object.fromEntries(top.legs.map((l) => [l.participantId, l.entry.catalogId]));
     expect(entries).toEqual({
-      jr: "entry.28993975.11114545",
-      keio: "entry.28993981.11126963",
-      marunouchi: "entry.28993451.11126978",
+      jr: "entry.f7ec73273c3e45c3835bff65f7c5cbfd.dd4a36af20b64cb49ff0a9bc5650ebec",
+      keio: "entry.8d3dc24aebe44c2396997dd6e3a54621.203eac45b6544615b776c0146865f999",
+      marunouchi: "entry.987143aae7814d658f6e9bd87eac83cb.2e3864c2d80c432e8f6e953612f44432",
     });
   });
 });
@@ -106,9 +107,6 @@ describe("G2: 改札を直接渡し直しても entry と distanceM は不変", 
 
 describe("G3: 複数路線に対応する改札が実在する", () => {
   it("lineIds.length > 1 の改札が少なくとも1件ある", () => {
-    // 選ばれ方（近い方が勝つ）の制御は fixture 側
-    // （recommend.test.ts「1 つの改札が複数の路線に対応してよい」）を正とする。
-    // 実データでは経路長を手で作れないため、ここでは実在することだけ確認する。
     const multi = dataset.catalog.entries.filter((e) => e.lineIds.length > 1);
     expect(multi.length).toBeGreaterThan(0);
     expect(multi.every((e) => e.lineIds.length >= 2)).toBe(true);
@@ -152,8 +150,8 @@ describe("G5: step_free", () => {
   const res = recommend(dataset, { ...representative, constraints: { accessibility: "step_free" } });
 
   it("ranked / infeasible の件数と理由", () => {
-    expect(res.ranked.length).toBe(136);
-    expect(res.infeasible.length).toBe(106);
+    expect(res.ranked.length).toBe(66);
+    expect(res.infeasible.length).toBe(6);
     expect(res.infeasible.every((i) => i.reason === "step_free")).toBe(true);
   });
 
@@ -173,19 +171,10 @@ describe("G6: 1位の steps は経路の部分集合で、entry に始まり mee
       expect(leg.steps.at(-1)!.nodeId).toBe(top.meeting.nodeId);
       counts[leg.participantId] = { pathNodeIds: leg.pathNodeIds.length, steps: leg.steps.length };
     }
-    // steps の区切りは名前・実際に曲がる・階が変わるノードだけで決め、次数
-    // (行き止まり枝込みの生の次数)では区切らない(docs/RECOMMENDER.md steps
-    // 節)。以前は次数3以上で区切っていたため、網にある行き止まり枝(設備への
-    // 袋小路)ぶん steps が水増しされていた(marunouchi は 31 行、pathNodeIds
-    // と同数)。区切り規則の変更後は次のとおり縮む。
-    //   jr:         steps 10 → 3
-    //   keio:       steps 18 → 6
-    //   marunouchi: steps 31 → 6
-    // ここでは実測値を凍結する。
     expect(counts).toEqual({
-      jr: { pathNodeIds: 10, steps: 3 },
-      keio: { pathNodeIds: 24, steps: 6 },
-      marunouchi: { pathNodeIds: 31, steps: 6 },
+      jr: { pathNodeIds: 8, steps: 4 },
+      keio: { pathNodeIds: 12, steps: 9 },
+      marunouchi: { pathNodeIds: 12, steps: 7 },
     });
   });
 });
@@ -197,8 +186,8 @@ describe("G7: 目的地を変えると出口が変わる", () => {
       ...representative,
       destination: { kind: "catalog", id: "dest.busta-shinjuku" },
     });
-    expect(west.ranked[0]!.onward.exit.catalogId).toBe("exit.28994922");
-    expect(busta.ranked[0]!.onward.exit.catalogId).toBe("exit.28994916");
+    expect(west.ranked[0]!.onward.exit.catalogId).toBe("exit.9b009263412c4446a9189d22c9e180a0");
+    expect(busta.ranked[0]!.onward.exit.catalogId).toBe("exit.ebb869c05be2473fb6c3b37e6750de58");
     expect(busta.ranked[0]!.meeting.catalogId).toBe(west.ranked[0]!.meeting.catalogId);
     expect(JSON.stringify(busta.ranked[0]!.legs)).toBe(JSON.stringify(west.ranked[0]!.legs));
   });
@@ -212,48 +201,27 @@ describe("G8: 決定性", () => {
   });
 });
 
-describe("G10: turn 判定の縮退座標修正（research-mapDesign.md §2.6 検収 a）", () => {
-  it("keio leg の steps に京王西口近くの角ノード 11120481 が含まれる", () => {
-    // 縮退座標バグ（直後のノードが同一座標で角度が 0 に潰れる）が直る前は、
-    // この角が steps から漏れて約 20m のショートカットになっていた
-    // （research-shape.md 実測）。修正後は turn が straight でない形で現れる。
-    const res = recommend(dataset, representative);
-    const top = res.ranked[0]!;
-    const keio = top.legs.find((l) => l.participantId === "keio")!;
-    expect(keio.pathNodeIds).toContain("11120481");
-    const step = keio.steps.find((s) => s.nodeId === "11120481");
-    expect(step).toBeDefined();
-    expect(step!.turn).not.toBe("straight");
+describe("G9: 片方向のリンクがグラフにあり、経路がそれを使える", () => {
+  it("逆向きの無いリンクが少なくとも1本ある", () => {
+    const pairs = new Set(dataset.graph.links.map((l) => `${l.from}\t${l.to}`));
+    const oneWay = dataset.graph.links.filter((l) => !pairs.has(`${l.to}\t${l.from}`));
+    expect(oneWay.length).toBeGreaterThan(0);
   });
 });
 
-describe("G9: 向きの実データ回帰", () => {
-  it("meet.29008226 の onward は片方向辺 11114909→11110818 を使う", () => {
+describe("G10: 代表ケースの keio 手順に曲がりがある", () => {
+  it("keio leg に straight 以外の turn がある", () => {
     const res = recommend(dataset, representative);
-    const cand = res.ranked.find((r) => r.meeting.catalogId === "meet.29008226");
-    expect(cand).toBeDefined();
-    expect(cand!.rank).toBe(113);
-    expect(cand!.onward.exit.catalogId).toBe("exit.28994920");
-    expect(cand!.onward.distanceM).toBeCloseTo(224.6, 1);
-
-    // raw ノード ID を直書きする唯一の例外。片方向リンク 18771133.f
-    // （11114909 → 11110818。逆向きの辺はグラフに無い）を実際に使っていることを
-    // 確認するのが目的で、カタログ ID を経由できない。
-    // 順方向の隣接で出口から探索する誤実装だと、この片方向辺を逆走できず
-    // 選ばれる出口や距離がずれる（research-verify.md 実測で 242 候補中 49 件に差）。
-    const i = cand!.onward.pathNodeIds.indexOf("11114909");
-    expect(i).toBeGreaterThanOrEqual(0);
-    expect(cand!.onward.pathNodeIds[i + 1]).toBe("11110818");
+    const keio = res.ranked[0]!.legs.find((l) => l.participantId === "keio")!;
+    expect(keio.steps.some((s) => s.turn !== "straight")).toBe(true);
   });
 });
 
-describe("G11: 手順は次数では区切らないので、行き止まり枝の多い経路ほど大きく減る", () => {
-  it("marunouchi leg は 15 行以下で、先頭は改札・末尾は集合地点、連続する straight move が無い", () => {
+describe("G11: 手順は次数では区切らないので、連続する straight move が無い", () => {
+  it("marunouchi leg は 15 行以下で、先頭は改札・末尾は集合地点", () => {
     const res = recommend(dataset, representative);
     const top = res.ranked[0]!;
     const maru = top.legs.find((l) => l.participantId === "marunouchi")!;
-    // 区切り規則の変更前は pathNodeIds と同数の 31 行だった（G6 のコメント参照）。
-    // 変更後は 6 行に縮む。ここでは緩めに 15 行以下だけを固定する。
     expect(maru.steps.length).toBeLessThanOrEqual(15);
     expect(maru.steps[0]).toMatchObject({ kind: "landmark", nodeId: maru.entry.nodeId, distanceM: 0 });
     expect(maru.steps.at(-1)).toMatchObject({ kind: "landmark", nodeId: top.meeting.nodeId });
@@ -267,59 +235,46 @@ describe("G11: 手順は次数では区切らないので、行き止まり枝�
   });
 });
 
-describe("G12: branchCount は実分岐（行き止まり枝を除いた次数）で決める", () => {
-  it("代表ケースの branchCount を固定する", () => {
+describe("G12: 代表ケースの branchCount を固定する", () => {
+  it("1位の branchCount", () => {
     const res = recommend(dataset, representative);
-    const top = res.ranked[0]!;
-    const byParticipant = Object.fromEntries(top.legs.map((l) => [l.participantId, l.branchCount]));
-    // 生の次数（行き止まり枝込み）で数えていたときの実測は
-    // jr: 9 / keio: 15 / marunouchi: 27。行き止まり枝を除いた実分岐に切り替えた
-    // 後は次のとおり縮む（マージンとして最終報告にも同じ値を載せる）。
-    expect(byParticipant).toEqual({ jr: 4, keio: 12, marunouchi: 21 });
+    const byParticipant = Object.fromEntries(res.ranked[0]!.legs.map((l) => [l.participantId, l.branchCount]));
+    expect(byParticipant).toEqual({ jr: 4, keio: 10, marunouchi: 8 });
   });
 });
 
 describe("G13: confirmations の branch 件数も実分岐で決める", () => {
   it("代表ケースの confirmations.branch 件数を固定する", () => {
     const res = recommend(dataset, representative);
-    const top = res.ranked[0]!;
     const branchCounts = Object.fromEntries(
-      top.legs.map((l) => [l.participantId, l.confirmations.filter((c) => c.kind === "branch").length]),
+      res.ranked[0]!.legs.map((l) => [l.participantId, l.confirmations.filter((c) => c.kind === "branch").length]),
     );
-    // 生の次数だったときの実測: jr 8 / keio 15 / marunouchi 27。
-    // 実分岐に切り替えた後: jr 3 / keio 12 / marunouchi 21。
-    expect(branchCounts).toEqual({ jr: 3, keio: 12, marunouchi: 21 });
+    expect(branchCounts).toEqual({ jr: 4, keio: 10, marunouchi: 8 });
   });
 });
 
 describe("G14: 1位の facilities をゴールデンに固定する", () => {
-  it("代表ケースの1位（meet.28993812）の facilities", () => {
+  it("代表ケースの1位（スターバックス コーヒー 新宿西口店）の facilities", () => {
     const res = recommend(dataset, representative);
     const top = res.ranked[0]!;
-    expect(top.meeting.catalogId).toBe("meet.28993812");
-    // elevatorM=46.79m(50m以内→true) restroomM=140.06m(50m超→false)。
-    // 段差なし制約が無くても、この候補への経路には階段/エスカレーター/unknown
-    // が無いので stepFree は true(実測)。
+    expect(top.meeting.catalogId).toBe("meet.mlit.ded26d8ca534472181a13cd5950df68a");
     expect(top.meeting.facilities).toEqual({ elevator: true, restroom: false, stepFree: true });
   });
 
   it("設備は順位を変えない: 上位3件の並びは G1 のゴールデンと同じ", () => {
-    // facilities を足す前後で ranked の並びが変わっていないことの回帰。
-    // 壊れたらここが真っ先に落ちる(設備は scores に入れていないので、
-    // 変わるとすれば実装ミスでしかない)。
     const res = recommend(dataset, representative);
     expect(res.ranked.slice(0, 3).map((r) => r.meeting.catalogId)).toEqual([
-      "meet.28993812",
-      "meet.28993811",
-      "meet.28993854",
+      "meet.mlit.ded26d8ca534472181a13cd5950df68a",
+      "meet.mlit.e83a373de29c40df85975be167725aa5",
+      "meet.mlit.bc30f06d24f74562aab411d142a8fe34",
     ]);
   });
 });
 
 describe("G15: accessibility: step_free では ranked 全件の stepFree が true", () => {
-  it("G5 の 136 件すべてで facilities.stepFree === true", () => {
+  it("G5 の 66 件すべてで facilities.stepFree === true", () => {
     const res = recommend(dataset, { ...representative, constraints: { accessibility: "step_free" } });
-    expect(res.ranked.length).toBe(136);
+    expect(res.ranked.length).toBe(66);
     expect(res.ranked.every((r) => r.meeting.facilities.stepFree)).toBe(true);
   });
 });

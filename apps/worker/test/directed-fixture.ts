@@ -39,6 +39,10 @@ const graph: Graph = {
 };
 
 const catalog: Catalog = {
+  lines: [
+    { id: "line.a", nameJa: "A線" },
+    { id: "line.b", nameJa: "B線" },
+  ],
   entries: [
     { catalogId: "entry.a", lineIds: ["line.a"], nodeId: "g.a", nameJa: "改札A" },
     { catalogId: "entry.b", lineIds: ["line.b"], nodeId: "g.b", nameJa: "改札B" },

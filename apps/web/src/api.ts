@@ -8,7 +8,8 @@ import type {
   CatalogResponse,
   ExitReportResponse,
   LandmarksResponse,
-  RecommendationResponse,
+  PublicRecommendationResponse,
+  RouteResponse,
 } from "worker/src/contract.js";
 import type {
   CreateRoomInput,
@@ -67,7 +68,9 @@ export const api = {
   // 解散。主催者だけ。docs/ROOM.md「DELETE /v1/rooms/:id」。
   dissolve: (id: string, token: string) => request<void>(`/v1/rooms/${id}`, { method: "DELETE" }, token),
   recommendations: (id: string) =>
-    request<RecommendationResponse>(`/v1/rooms/${id}/recommendations?limit=10`),
+    request<PublicRecommendationResponse>(`/v1/rooms/${id}/recommendations?limit=10`),
+  // 画面6「経路」。集合場所が決まっているルームの 1 地点分。query は付けない。
+  route: (id: string) => request<RouteResponse>(`/v1/rooms/${id}/route`),
   // 画面7「いまいる場所」。近くの名前のある地点(改札・集合候補・出口)。
   landmarks: (nearNodeId: string) =>
     request<LandmarksResponse>(`/v1/landmarks?near=${encodeURIComponent(nearNodeId)}`),

@@ -4,7 +4,11 @@
 // 関数・クラス以外の named export（DEFAULT_ROOM_RECOMMENDATIONS_LIMIT のような値）を
 // エントリポイント候補として拒否し、起動できなくなる。
 
-import type { DestinationRef, RecommendationResponse } from "./contract.js";
+import type {
+  DestinationRef,
+  PublicRecommendationResponse,
+  RecommendationResponse,
+} from "./contract.js";
 import type { Dataset } from "./graph.js";
 import { recommend } from "./recommend.js";
 import { RoomError, type Room } from "./room.js";
@@ -27,15 +31,40 @@ export function parseRoomRecommendationsLimit(raw: string | undefined): number {
  */
 export function limitRanked(
   response: RecommendationResponse,
-  meetingNodeId: string | null,
+  meetingCatalogId: string | null,
   limit: number,
 ): RecommendationResponse {
   const ranked = response.ranked.slice(0, limit);
-  if (meetingNodeId !== null && !ranked.some((r) => r.meeting.nodeId === meetingNodeId)) {
-    const chosen = response.ranked.find((r) => r.meeting.nodeId === meetingNodeId);
+  if (meetingCatalogId !== null && !ranked.some((r) => r.meeting.catalogId === meetingCatalogId)) {
+    const chosen = response.ranked.find((r) => r.meeting.catalogId === meetingCatalogId);
     if (chosen) ranked.push(chosen);
   }
   return { ...response, ranked };
+}
+
+/** 候補比較の HTTP 応答。手順・経路 ID は落とす。 */
+export function publicRecommendations(res: RecommendationResponse): PublicRecommendationResponse {
+  return {
+    ...res,
+    ranked: res.ranked.map((row) => ({
+      rank: row.rank,
+      meeting: row.meeting,
+      scores: row.scores,
+      reasons: row.reasons,
+      legs: row.legs.map((leg) => ({
+        participantId: leg.participantId,
+        entry: leg.entry,
+        distanceM: leg.distanceM,
+        costSeconds: leg.costSeconds,
+        floorChanges: leg.floorChanges,
+        branchCount: leg.branchCount,
+      })),
+      onward: {
+        distanceM: row.onward.distanceM,
+        exit: row.onward.exit,
+      },
+    })),
+  };
 }
 
 /**
@@ -72,5 +101,5 @@ export function buildRoomRecommendations(ds: Dataset, room: Room, limit: number)
       ...(p.confirmed ? { confirmed: p.confirmed } : {}),
     })),
   });
-  return limitRanked(res, room.meetingNodeId, limit);
+  return limitRanked(res, room.meetingCatalogId, limit);
 }

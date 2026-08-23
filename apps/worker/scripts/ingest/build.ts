@@ -1,4 +1,4 @@
-// 国交省の統合版と東京都の名前のある地点から、graph.json / catalog.json を作る純関数。
+// 国交省の統合版から graph.json / catalog.json を作る純関数。
 // IO はしない（読むのは main.ts、書くのも main.ts）。
 //
 // しきい値は下の定数。変えるときは呼び出し側と検査も揃える。
@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import type {
   Catalog,
+  CatalogLine,
   DestinationCatalogEntry,
   EntryCatalogEntry,
   ExitCatalogEntry,
@@ -18,10 +19,18 @@ import type {
   MeetingCatalogEntry,
   VerticalKind,
 } from "../../src/graph.ts";
-import { distPointPolyline, distXY, pointInRings, project, type XY } from "./geo.ts";
-import type { LatLng, MlitData, MlitLink } from "./mlit.ts";
-import { codeName, exitNameOf, explainOf, genericName, normalizeName, platformName, privateName } from "./rules.ts";
-import type { TokyoNamedPoint } from "./tokyo.ts";
+import { distPointPolyline, distXY, project, type XY } from "./geo.ts";
+import type { LatLng, MlitData, MlitLink, MlitOpening } from "./mlit.ts";
+import {
+  codeName,
+  exitNameOf,
+  exitOnly,
+  explainOf,
+  genericName,
+  normalizeName,
+  platformName,
+  privateName,
+} from "./rules.ts";
 
 // ---------------------------------------------------------------- 定数
 
@@ -30,10 +39,9 @@ export const DATASET_ID = "tokyo.shinjuku-terminal" as const;
 /** 平面座標の原点。データが変わっても座標が動かないように固定する。 */
 export const ORIGIN = { lat: 35.69, lng: 139.7 } as const;
 
-/** 二つのデータのクレジット。国交省の利用規約の加工表記と、東京都の CC BY。 */
+/** 国交省の利用規約の加工表記。 */
 export const ATTRIBUTION_JA =
-  "「新宿駅周辺屋内地図データ」（国土交通省）（https://www.geospatial.jp/ckan/dataset/mlit-indoor-shinjuku-r2）を加工して作成。" +
-  "東京都都市整備局「新宿駅周辺の施設情報及び移動ルート」（CC BY 4.0）を加工して作成。";
+  "「新宿駅周辺屋内地図データ」（国土交通省）（https://www.geospatial.jp/ckan/dataset/mlit-indoor-shinjuku-r2）を加工して作成。";
 
 /** ordinal → floorLabel の固定表（docs/DATA.md「階」）。中間階は上の階の名前に M を付ける。 */
 export const FLOOR_LABELS: Readonly<Record<string, string>> = {
@@ -75,7 +83,7 @@ export function deltaZOf(fromOrdinal: number, toOrdinal: number): number {
 const GATE_ON_LINE_M = 1.0;
 const GATE_SNAP_M = 10;
 const MEETING_SNAP_M = 40;
-const NAME_MERGE_M = 30;
+const BUSTA_ON_LINE_M = 1.0;
 const EXIT_SIGN_SNAP_M = 15;
 const EXIT_OUTDOOR_PATH_M = 120;
 const EXIT_OUTDOOR_XY_M = 25;
@@ -83,8 +91,6 @@ const EXIT_TWIN_M = 40;
 const BOUNDARY_EXIT_CLEAR_M = 15;
 const FACILITY_SNAP_M = 15;
 
-/** 店舗 POI の名前としてみなすカテゴリ。F025 店舗、F039 タクシー乗り場。 */
-const MEETING_POI_CATEGORIES = new Set(["F025", "F039"]);
 /** トイレの POI（F001〜F008）と面（B007〜B014）。 */
 const RESTROOM_POI = /^F00[1-8]$/;
 const RESTROOM_SPACE = /^B0(0[7-9]|1[0-4])$/;
@@ -93,8 +99,11 @@ const RESTROOM_SPACE = /^B0(0[7-9]|1[0-4])$/;
 
 export type GatesFile = Record<string, { nameJa: string; lineIds: string[]; source?: string }>;
 
-/** 東京都の階名 → 国交省 ordinal の優先順。"_comment" のような文字列の値は読み飛ばす。 */
-export type LevelsFile = Record<string, number[] | string>;
+export type LinesFile = CatalogLine[];
+
+export type LandmarkKind = "mouth" | "police" | "info";
+
+export type LandmarksFile = Record<string, { nameJa: string; kind: LandmarkKind }>;
 
 export type ExitLabel = {
   labelJa?: string;
@@ -106,9 +115,9 @@ export type ExitLabelsFile = Record<string, ExitLabel | string>;
 
 export type BuildInput = {
   mlit: MlitData;
-  tokyo: TokyoNamedPoint[];
   gates: GatesFile;
-  levels: LevelsFile;
+  lines: LinesFile;
+  landmarks: LandmarksFile;
   exitLabels: ExitLabelsFile;
   version: string;
 };
@@ -133,17 +142,15 @@ export type BuildReport = {
   /** 結べなかった改札。verify で落ちる。 */
   gatesUnresolved: string[];
   byLine: Record<string, number>;
-  meetingSources: { mlit: number; tokyo: number; gate: number };
+  meetingSources: { gate: number; taxi: number; shop: number; opening: number; landmark: number };
   /** 国交省の中で同じ名前が複数あって外した名前。 */
   mlitDuplicateNames: string[];
-  /** 国交省と同じ地点として一つにした東京都の名前。 */
-  tokyoMerged: string[];
-  /** 固定表に階が無かった東京都の地点。 */
-  tokyoNoLevel: string[];
-  /** 表の階の面に点が入らず、表の先頭の階にした数。 */
-  tokyoLevelFallback: number;
-  /** 和集合で同じ名前が複数あって外した名前。 */
-  unionDuplicateNames: string[];
+  /** バスタ新宿の Opening を 1 候補へまとめた記録。 */
+  bustaMerged: string[];
+  /** 出場専用で改札にも集合にもしなかった Opening。 */
+  gatesExitOnly: string[];
+  /** 手書き地点の nodeId がグラフに無かったもの。 */
+  landmarksUnresolved: string[];
   /** 40m 以内にノードが無かった名前。 */
   unsnapped: string[];
   /** 同じノードに寄った別名（両方残す。順位では推薦側が一つにまとめる）。 */
@@ -313,17 +320,70 @@ function exitLabelOf(file: ExitLabelsFile, id: string): ExitLabel | null {
   return v !== undefined && typeof v !== "string" ? v : null;
 }
 
-/** 名前の規則（docs/RECOMMENDER.md「集合候補の選び方」）を通るか。 */
+/** 名前の規則を通るか。番線・区画コード・設備の一般名は外す。 */
 function usableName(name: string): boolean {
   return (
     name !== "" && !codeName.test(name) && !privateName.test(name) && !genericName.test(name) && !platformName.test(name)
   );
 }
 
+type MeetingFacilityCategory = "F039" | "F025";
+
+/** 集合候補にする施設。タクシー乗り場と、名前のある店。 */
+export function isMeetingFacility(category: string, name: string): category is MeetingFacilityCategory {
+  return (category === "F039" || category === "F025") && usableName(name);
+}
+
+function meetingSourceOfFacility(category: MeetingFacilityCategory): "taxi" | "shop" {
+  switch (category) {
+    case "F039":
+      return "taxi";
+    case "F025":
+      return "shop";
+    default: {
+      const _never: never = category;
+      return _never;
+    }
+  }
+}
+
+function landmarkExplain(kind: LandmarkKind): number {
+  switch (kind) {
+    case "police":
+      return 5;
+    case "info":
+      return 4;
+    case "mouth":
+      return 3;
+    default: {
+      const _never: never = kind;
+      return _never;
+    }
+  }
+}
+
+function hitsOnOpening(
+  opening: MlitOpening,
+  byOrdinal: Map<number, NodeRec[]>,
+  toXY: (p: LatLng) => XY,
+  onLineM: number,
+  snapM: number,
+): { hits: { rec: NodeRec; d: number }[]; snapped: boolean } {
+  const lineXY = opening.lines.map((line) => line.map(toXY));
+  const cands = (byOrdinal.get(opening.ordinal) ?? []).map((rec) => ({
+    rec,
+    d: lineXY.reduce((m, line) => Math.min(m, distPointPolyline(rec.xy, line)), Number.POSITIVE_INFINITY),
+  }));
+  const onLine = cands.filter((c) => c.d <= onLineM);
+  if (onLine.length > 0) return { hits: onLine, snapped: false };
+  const near = cands.filter((c) => c.d <= snapM).sort((x, y) => x.d - y.d || cmp(x.rec.node.id, y.rec.node.id));
+  return near[0] ? { hits: [near[0]], snapped: true } : { hits: [], snapped: false };
+}
+
 // ---------------------------------------------------------------- 本体
 
 export function build(input: BuildInput): BuildResult {
-  const { mlit, tokyo, gates, levels, exitLabels, version } = input;
+  const { mlit, gates, lines: lineList, landmarks, exitLabels, version } = input;
   const report: BuildReport = {
     nodes: 0,
     links: 0,
@@ -335,12 +395,11 @@ export function build(input: BuildInput): BuildResult {
     gatesSnapped: [],
     gatesUnresolved: [],
     byLine: {},
-    meetingSources: { mlit: 0, tokyo: 0, gate: 0 },
+    meetingSources: { gate: 0, taxi: 0, shop: 0, opening: 0, landmark: 0 },
     mlitDuplicateNames: [],
-    tokyoMerged: [],
-    tokyoNoLevel: [],
-    tokyoLevelFallback: 0,
-    unionDuplicateNames: [],
+    bustaMerged: [],
+    gatesExitOnly: [],
+    landmarksUnresolved: [],
     unsnapped: [],
     sameNodeAliases: [],
     snapDistancesM: [],
@@ -459,26 +518,21 @@ export function build(input: BuildInput): BuildResult {
       report.gatesUnresolved.push(`${gate.nameJa}: Opening ${openingId} が無い`);
       continue;
     }
-    const lineXY = opening.lines.map((line) => line.map(toXY));
-    const cands = (byOrdinal.get(opening.ordinal) ?? []).map((rec) => ({
-      rec,
-      d: lineXY.reduce((m, line) => Math.min(m, distPointPolyline(rec.xy, line)), Number.POSITIVE_INFINITY),
-    }));
-    let hits = cands.filter((c) => c.d <= GATE_ON_LINE_M);
-    if (hits.length === 0) {
-      const near = cands.filter((c) => c.d <= GATE_SNAP_M).sort((x, y) => x.d - y.d || cmp(x.rec.node.id, y.rec.node.id));
-      const first = near[0];
-      if (first) {
-        hits = [first];
-        report.gatesSnapped.push(`${gate.nameJa} ${first.d.toFixed(1)}m`);
-      }
+    if (exitOnly.test(gate.nameJa) || exitOnly.test(opening.name)) {
+      report.gatesExitOnly.push(gate.nameJa);
+      continue;
     }
-    if (hits.length === 0) {
+    const resolved = hitsOnOpening(opening, byOrdinal, toXY, GATE_ON_LINE_M, GATE_SNAP_M);
+    if (resolved.hits.length === 0) {
       report.gatesUnresolved.push(`${gate.nameJa}: ${GATE_SNAP_M}m 以内にノードが無い`);
       continue;
     }
+    if (resolved.snapped) {
+      const first = resolved.hits[0]!;
+      report.gatesSnapped.push(`${gate.nameJa} ${first.d.toFixed(1)}m`);
+    }
     const lineIds = [...new Set(gate.lineIds)].sort();
-    for (const h of hits.sort((x, y) => cmp(x.rec.node.id, y.rec.node.id))) {
+    for (const h of resolved.hits.sort((x, y) => cmp(x.rec.node.id, y.rec.node.id))) {
       entries.push({ catalogId: `entry.${openingId}.${h.rec.node.id}`, lineIds, nodeId: h.rec.node.id, nameJa: gate.nameJa });
       if (h.rec.node.nameJa === null) h.rec.node.nameJa = gate.nameJa;
     }
@@ -486,107 +540,31 @@ export function build(input: BuildInput): BuildResult {
   entries.sort((a, b) => cmp(a.catalogId, b.catalogId));
   for (const e of entries) for (const l of e.lineIds) report.byLine[l] = (report.byLine[l] ?? 0) + 1;
 
-  // ---- 4. 集合候補
-  type Cand = { catalogId: string; nameJa: string; ordinal: number; xy: XY; source: "mlit" | "tokyo" };
-
-  // 4a. 国交省の店舗 POI。同じ名前が複数あれば外す（「ファミリーマート」が 2 つ）。
-  const mlitPois = mlit.facilities
-    .filter((f) => MEETING_POI_CATEGORIES.has(f.category) && usableName(f.name.trim()))
-    .sort((a, b) => cmp(a.id, b.id));
-  const mlitNameCount = new Map<string, number>();
-  for (const f of mlitPois) {
-    const k = normalizeName(f.name.trim());
-    mlitNameCount.set(k, (mlitNameCount.get(k) ?? 0) + 1);
-  }
-  const mlitCands: Cand[] = [];
-  for (const f of mlitPois) {
-    const name = f.name.trim();
-    if ((mlitNameCount.get(normalizeName(name)) ?? 0) > 1) {
-      if (!report.mlitDuplicateNames.includes(name)) report.mlitDuplicateNames.push(name);
-      continue;
-    }
-    mlitCands.push({ catalogId: `meet.mlit.${f.id}`, nameJa: name, ordinal: f.ordinal, xy: toXY(f.point), source: "mlit" });
-  }
-
-  // 4b. 東京都の名前。階は固定表で選び、国交省と同じ地点なら一つにする（国交省を残す）。
-  type FloorPoly = { rings: XY[][]; bbox: [number, number, number, number] };
-  const floorsByOrdinal = new Map<number, FloorPoly[]>();
-  for (const fl of mlit.floors) {
-    const rings = fl.rings.map((ring) => ring.map(toXY));
-    const xs = rings.flat().map((p) => p.x);
-    const ys = rings.flat().map((p) => p.y);
-    if (xs.length === 0) continue;
-    const poly: FloorPoly = { rings, bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] };
-    const list = floorsByOrdinal.get(fl.ordinal);
-    if (list) list.push(poly);
-    else floorsByOrdinal.set(fl.ordinal, [poly]);
-  }
-  const inFloor = (ordinal: number, xy: XY): boolean =>
-    (floorsByOrdinal.get(ordinal) ?? []).some(
-      (p) => xy.x >= p.bbox[0] && xy.x <= p.bbox[2] && xy.y >= p.bbox[1] && xy.y <= p.bbox[3] && pointInRings(xy, p.rings),
-    );
-
-  const tokyoCands: Cand[] = [];
-  for (const t of [...tokyo].sort((a, b) => a.gid - b.gid)) {
-    const pref = levels[t.levelLabel];
-    if (!Array.isArray(pref) || pref.length === 0) {
-      report.tokyoNoLevel.push(`${t.nameJa} (${t.levelLabel})`);
-      continue;
-    }
-    const xy = toXY(t);
-    let ordinal = pref.find((o) => inFloor(o, xy));
-    if (ordinal === undefined) {
-      ordinal = pref[0]!;
-      report.tokyoLevelFallback++;
-    }
-    // 正規化した名前が一致すれば距離によらず同じ地点（どちらの中でも固有の名前）。
-    // 一方が他方を含むだけなら 30m 以内のときだけ。
-    const norm = normalizeName(t.nameJa);
-    const twin = mlitCands.find((m) => {
-      const mn = normalizeName(m.nameJa);
-      if (mn === norm) return true;
-      if (distXY(m.xy, xy) > NAME_MERGE_M) return false;
-      const shorter = Math.min(mn.length, norm.length);
-      return shorter >= 3 && (mn.includes(norm) || norm.includes(mn));
-    });
-    if (twin) {
-      report.tokyoMerged.push(`${t.nameJa} → ${twin.nameJa}`);
-      continue;
-    }
-    tokyoCands.push({ catalogId: `meet.tokyo.${t.gid}`, nameJa: t.nameJa, ordinal, xy, source: "tokyo" });
-  }
-
-  // 4c. 和集合で同じ名前が複数あれば外す。
-  const unionCount = new Map<string, number>();
-  for (const c of [...mlitCands, ...tokyoCands]) {
-    const k = normalizeName(c.nameJa);
-    unionCount.set(k, (unionCount.get(k) ?? 0) + 1);
-  }
-  const unionCands = [...mlitCands, ...tokyoCands].filter((c) => {
-    if ((unionCount.get(normalizeName(c.nameJa)) ?? 0) > 1) {
-      if (!report.unionDuplicateNames.includes(c.nameJa)) report.unionDuplicateNames.push(c.nameJa);
-      return false;
-    }
-    return true;
-  });
-
-  // 4d. ノードへ寄せる。国交省 → 東京都の順。店は通路のノードより密なので、隣り合う店が
-  // 同じノードに寄ることが多い（実データで約 100 件）。名前はすべて残し、ノードの
-  // nameJa には最初の一つを付ける。順位に出すときに同じノードを一つにまとめるのは
-  // 推薦側の仕事（docs/RECOMMENDER.md「集合候補の選び方」）。
+  // ---- 4. 集合候補（改札前・タクシー・店・バスタ前・手書きの大きな口）
   const meetingByNode = new Map<string, MeetingCatalogEntry>();
+  const meetingByName = new Map<string, MeetingCatalogEntry>();
   const meetings: MeetingCatalogEntry[] = [];
-  const pushMeeting = (m: MeetingCatalogEntry, source: "mlit" | "tokyo" | "gate"): void => {
-    const first = meetingByNode.get(m.nodeId);
-    if (first) report.sameNodeAliases.push(`${m.nameJa} = ${first.nameJa}`);
-    else meetingByNode.set(m.nodeId, m);
+  type MeetingSource = keyof BuildReport["meetingSources"];
+  const pushMeeting = (m: MeetingCatalogEntry, source: MeetingSource): void => {
+    const sameNode = meetingByNode.get(m.nodeId);
+    if (sameNode) {
+      report.sameNodeAliases.push(`${m.nameJa} = ${sameNode.nameJa}`);
+      return;
+    }
+    const nameKey = normalizeName(m.nameJa);
+    const sameName = meetingByName.get(nameKey);
+    if (sameName) {
+      report.sameNodeAliases.push(`${m.nameJa} = ${sameName.nameJa}`);
+      return;
+    }
+    meetingByNode.set(m.nodeId, m);
+    meetingByName.set(nameKey, m);
     meetings.push(m);
     report.meetingSources[source]++;
-    const rec = recs.get(m.nodeId)!;
-    if (rec.node.nameJa === null) rec.node.nameJa = m.nameJa;
+    const rec = recs.get(m.nodeId);
+    if (rec && rec.node.nameJa === null) rec.node.nameJa = m.nameJa;
   };
 
-  // 改札を先に（改札のノードに店の名前を付けない）。同じ表示名の改札は一つにまとめる。
   const gateNodeByName = new Map<string, string>();
   for (const e of entries) {
     const prev = gateNodeByName.get(e.nameJa);
@@ -594,28 +572,101 @@ export function build(input: BuildInput): BuildResult {
   }
   for (const [nameJa, nodeId] of [...gateNodeByName.entries()].sort((a, b) => cmp(a[1], b[1]))) {
     pushMeeting(
-      { catalogId: `meet.gate.${nodeId}`, nodeId, nameJa, explainability: 2, evidence: "hypothesis", elevatorM: null, restroomM: null },
+      {
+        catalogId: `meet.gate.${nodeId}`,
+        nodeId,
+        nameJa,
+        explainability: 2,
+        evidence: "hypothesis",
+        elevatorM: null,
+        restroomM: null,
+      },
       "gate",
     );
   }
-  for (const c of unionCands) {
-    const near = nearestNode(c.ordinal, c.xy, MEETING_SNAP_M);
+
+  const facilityMeetings = mlit.facilities
+    .filter((f) => isMeetingFacility(f.category, f.name))
+    .sort((a, b) => cmp(a.id, b.id));
+  const facilityNameCount = new Map<string, number>();
+  for (const f of facilityMeetings) {
+    const k = normalizeName(f.name.trim());
+    facilityNameCount.set(k, (facilityNameCount.get(k) ?? 0) + 1);
+  }
+  for (const f of facilityMeetings) {
+    const category = f.category;
+    if (!isMeetingFacility(category, f.name)) continue;
+    const name = f.name.trim();
+    if ((facilityNameCount.get(normalizeName(name)) ?? 0) > 1) {
+      if (!report.mlitDuplicateNames.includes(name)) report.mlitDuplicateNames.push(name);
+      continue;
+    }
+    const near = nearestNode(f.ordinal, toXY(f.point), MEETING_SNAP_M);
     if (!near) {
-      report.unsnapped.push(`${c.nameJa} (${floorLabelOf(c.ordinal)})`);
+      report.unsnapped.push(`${name} (${floorLabelOf(f.ordinal)})`);
       continue;
     }
     report.snapDistancesM.push(near.d);
     pushMeeting(
       {
-        catalogId: c.catalogId,
+        catalogId: `meet.mlit.${f.id}`,
         nodeId: near.rec.node.id,
-        nameJa: c.nameJa,
-        explainability: explainOf(c.nameJa),
+        nameJa: name,
+        explainability: explainOf(name),
         evidence: "hypothesis",
         elevatorM: null,
         restroomM: null,
       },
-      c.source,
+      meetingSourceOfFacility(category),
+    );
+  }
+
+  const bustaOpenings = mlit.openings.filter((o) => o.name.trim() === "バスタ新宿").sort((a, b) => cmp(a.id, b.id));
+  const bustaHits: { openingId: string; rec: NodeRec; d: number }[] = [];
+  for (const opening of bustaOpenings) {
+    const resolved = hitsOnOpening(opening, byOrdinal, toXY, BUSTA_ON_LINE_M, BUSTA_ON_LINE_M);
+    for (const h of resolved.hits) bustaHits.push({ openingId: opening.id, rec: h.rec, d: h.d });
+  }
+  bustaHits.sort((a, b) => cmp(a.rec.node.id, b.rec.node.id) || cmp(a.openingId, b.openingId));
+  const busta = bustaHits[0];
+  if (busta) {
+    for (const extra of bustaHits.slice(1)) {
+      report.bustaMerged.push(`${extra.openingId} → ${busta.openingId} (${extra.rec.node.id})`);
+    }
+    pushMeeting(
+      {
+        catalogId: `meet.opening.${busta.openingId}`,
+        nodeId: busta.rec.node.id,
+        nameJa: "バスタ新宿",
+        explainability: explainOf("バスタ新宿"),
+        evidence: "hypothesis",
+        elevatorM: null,
+        restroomM: null,
+      },
+      "opening",
+    );
+    if (busta.rec.node.nameJa === null) busta.rec.node.nameJa = "バスタ新宿";
+  } else if (bustaOpenings.length > 0) {
+    report.unsnapped.push("バスタ新宿");
+  }
+
+  for (const nodeId of Object.keys(landmarks).sort()) {
+    const mark = landmarks[nodeId]!;
+    if (!recs.has(nodeId)) {
+      report.landmarksUnresolved.push(`${mark.nameJa} (${nodeId})`);
+      continue;
+    }
+    pushMeeting(
+      {
+        catalogId: `meet.node.${nodeId}`,
+        nodeId,
+        nameJa: mark.nameJa,
+        explainability: landmarkExplain(mark.kind),
+        evidence: "hypothesis",
+        elevatorM: null,
+        restroomM: null,
+      },
+      "landmark",
     );
   }
 
@@ -792,7 +843,10 @@ export function build(input: BuildInput): BuildResult {
     nodes,
     links,
   };
-  const catalog: BuildCatalog = { entries, meetings, exits, destinations };
+  const usedLineIds = new Set<string>();
+  for (const e of entries) for (const id of e.lineIds) usedLineIds.add(id);
+  const lines: CatalogLine[] = lineList.filter((l) => usedLineIds.has(l.id));
+  const catalog: BuildCatalog = { lines, entries, meetings, exits, destinations };
 
   report.nodes = nodes.length;
   report.links = links.length;

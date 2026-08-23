@@ -72,8 +72,11 @@ const styles = stylex.create({
   root: {
     boxSizing: "border-box",
     position: "relative",
-    width: 390,
-    height: 844,
+    width: "100%",
+    maxWidth: 480,
+    height: "100dvh",
+    minHeight: "100dvh",
+    marginInline: "auto",
     overflow: "hidden",
     backgroundColor: color["--color-text-primary"],
   },
@@ -85,7 +88,7 @@ const styles = stylex.create({
   back: {
     boxSizing: "border-box",
     position: "absolute",
-    top: space["--space-6"],
+    top: "calc(16px + env(safe-area-inset-top))",
     left: space["--space-6"],
     zIndex: 2,
     display: "flex",

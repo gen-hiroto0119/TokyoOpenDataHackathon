@@ -39,13 +39,21 @@ export function exitNameOf(label: string): string {
 }
 
 /**
- * 集合候補の説明しやすさ。同点なら交番・広場・案内所が店舗に勝つようにする階層。
- * 交番5 / 案内所・インフォメーション4 / 広場・コンコース3 / 改札2 / その他1。
+ * 集合候補の説明しやすさ。同点の最後だけ使う。
+ * 交番5 / 案内所4 / バスタ前・地上の大きな口・建物入口3 / 改札2 / その他1。
  */
 export function explainOf(name: string): number {
   if (name.includes("交番")) return 5;
   if (name.includes("案内所") || name.includes("インフォメーション")) return 4;
-  if (name.includes("広場") || name.includes("コンコース")) return 3;
+  if (
+    name.includes("バスタ") ||
+    name.includes("西口前") ||
+    name.includes("入口") ||
+    name.includes("広場") ||
+    name.includes("コンコース")
+  ) {
+    return 3;
+  }
   if (name.includes("改札")) return 2;
   return 1;
 }

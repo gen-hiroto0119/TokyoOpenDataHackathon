@@ -3,7 +3,12 @@
 // — room / recommendations の応答にトークンは含まれないので、自然と入らない。
 import type { ReactNode } from "react";
 import useSWR, { mutate as globalMutate, SWRConfig, type Cache } from "swr";
-import type { CatalogResponse, LandmarksResponse, RecommendationResponse } from "worker/src/contract.js";
+import type {
+  CatalogResponse,
+  LandmarksResponse,
+  PublicRecommendationResponse,
+  RouteResponse,
+} from "worker/src/contract.js";
 import type { Room } from "worker/src/room.js";
 import { ApiError, api } from "./api.js";
 
@@ -69,7 +74,7 @@ export function useRoom(roomId: string | null) {
 
 export type RecsResult =
   | { kind: "waiting"; waitingFor: string[] }
-  | { kind: "ready"; data: RecommendationResponse };
+  | { kind: "ready"; data: PublicRecommendationResponse };
 
 type RecsKey = readonly ["recs", string, string];
 
@@ -121,6 +126,78 @@ export async function primeRoomRecommendations(
   const key = recsKey(roomId, updatedAt);
   if (!key) throw new Error("invalid room/updatedAt");
   const result = await recsFetcher(key);
+  await globalMutate(key, result, { revalidate: false });
+  return result;
+}
+
+// ---------------------------------------------------------------- 経路(1 地点)
+
+export type RouteResult =
+  | { kind: "waiting"; waitingFor: string[] }
+  | { kind: "ready"; data: RouteResponse };
+
+type RouteKey = readonly ["route", string, string, string];
+
+function routeKey(
+  roomId: string | null,
+  meetingCatalogId: string | null,
+  updatedAt: string | undefined,
+): RouteKey | null {
+  return roomId && meetingCatalogId && updatedAt
+    ? (["route", roomId, meetingCatalogId, updatedAt] as const)
+    : null;
+}
+
+/**
+ * 409 not_enough_participants は推薦と同じく状態であってエラーではない。
+ * throw すると SWR がリトライ連打するので、ここで通常値に正規化する。
+ */
+async function routeFetcher([, roomId]: RouteKey): Promise<RouteResult> {
+  try {
+    const data = await api.route(roomId);
+    return { kind: "ready", data };
+  } catch (error) {
+    if (error instanceof ApiError && error.body.code === "not_enough_participants") {
+      const waitingFor = error.body.details?.["waitingFor"];
+      return {
+        kind: "waiting",
+        waitingFor: Array.isArray(waitingFor) ? (waitingFor as string[]) : [],
+      };
+    }
+    throw error;
+  }
+}
+
+/**
+ * roomId と meetingCatalogId があるときだけ取る。updatedAt が変わると
+ * キーが変わり、それが再取得の引き金になる。refreshInterval は付けない
+ * (room 側のポーリングに乗る)。
+ */
+export function useRoomRoute(
+  roomId: string | null,
+  meetingCatalogId: string | null,
+  updatedAt: string | undefined,
+) {
+  return useSWR(routeKey(roomId, meetingCatalogId, updatedAt), routeFetcher, {
+    keepPreviousData: true,
+    revalidateOnFocus: false,
+  });
+}
+
+/**
+ * confirmed の PATCH で room.updatedAt が変わった直後、次の updatedAt に
+ * 対応する経路キーへ先回りしてデータを入れておく。呼ばずに任せると
+ * useRoomRoute がキー変化を検知してから取りに行くので、呼び出し側は
+ * 「新しい経路が出るまで」を待てない。ここで待てるようにする。
+ */
+export async function primeRoomRoute(
+  roomId: string,
+  meetingCatalogId: string,
+  updatedAt: string,
+): Promise<RouteResult> {
+  const key = routeKey(roomId, meetingCatalogId, updatedAt);
+  if (!key) throw new Error("invalid room/meeting/updatedAt");
+  const result = await routeFetcher(key);
   await globalMutate(key, result, { revalidate: false });
   return result;
 }
