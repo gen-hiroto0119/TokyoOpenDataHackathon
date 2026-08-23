@@ -3,7 +3,7 @@ import maplibregl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibr
 import "maplibre-gl/dist/maplibre-gl.css";
 import * as stylex from "@stylexjs/stylex";
 import type { RouteMap as RouteMapData, RouteMapMarkKind } from "worker/src/contract.js";
-import { segmentCamera } from "../route-map-camera.js";
+import { hereLngLat, segmentCamera } from "../route-map-camera.js";
 import { color } from "../tokens/color.stylex.js";
 import { space } from "../tokens/space.stylex.js";
 import { type } from "../tokens/typography.stylex.js";
@@ -42,6 +42,7 @@ export type RouteMapProps = {
   currentNodeId?: string | null;
   fromNodeId?: string | null;
   toNodeId?: string | null;
+  hereBetween?: boolean;
   attributionJa?: string;
   onFloorChange?: (floor: string) => void;
 };
@@ -191,47 +192,68 @@ function maskAround(box: [LngLat, LngLat]): GeoJSON.Feature {
 }
 
 function routeCollection(map: RouteMapData, floor: string): GeoJSON.FeatureCollection {
-  return {
-    type: "FeatureCollection",
-    features: map.lines
-      .filter((line) => line.floor === floor)
-      .map((line, index) => ({
-        type: "Feature" as const,
-        properties: { floor: line.floor, index },
-        geometry: { type: "LineString" as const, coordinates: line.coordinates },
-      })),
-  };
+  const features: GeoJSON.Feature[] = [];
+  for (const [index, line] of map.lines.entries()) {
+    if (line.floor !== floor) continue;
+    features.push({
+      type: "Feature",
+      properties: { floor: line.floor, index },
+      geometry: { type: "LineString", coordinates: line.coordinates },
+    });
+  }
+  return { type: "FeatureCollection", features };
 }
 
 function connectorCollection(map: RouteMapData, floor: string): GeoJSON.FeatureCollection {
-  return {
-    type: "FeatureCollection",
-    features: map.connectors
-      .filter((row) => row.fromFloor === floor || row.toFloor === floor)
-      .map((row, index) => ({
-        type: "Feature" as const,
-        properties: { kind: row.kind, index },
-        geometry: { type: "LineString" as const, coordinates: row.coordinates },
-      })),
-  };
+  const features: GeoJSON.Feature[] = [];
+  for (const [index, row] of map.connectors.entries()) {
+    if (row.fromFloor !== floor && row.toFloor !== floor) continue;
+    features.push({
+      type: "Feature",
+      properties: { kind: row.kind, index },
+      geometry: { type: "LineString", coordinates: row.coordinates },
+    });
+  }
+  return { type: "FeatureCollection", features };
 }
 
 function markCollection(map: RouteMapData, floor: string, currentNodeId: string | null): GeoJSON.FeatureCollection {
-  return {
-    type: "FeatureCollection",
-    features: map.marks
-      .filter((mark) => (mark.floor ?? "") === floor && mark.kind !== "turn" && mark.kind !== "node")
-      .map((mark) => ({)
-        type: "Feature" as const,
-        properties: {
-          kind: mark.kind,
-          nodeId: mark.nodeId,
-          nameJa: mark.nameJa,
-          current: mark.nodeId === currentNodeId ? 1 : 0,
-        },
-        geometry: { type: "Point" as const, coordinates: [mark.lng, mark.lat] },
-      })),
-  };
+  const features: GeoJSON.Feature[] = [];
+  for (const mark of map.marks) {
+    const markFloor = mark.floor == null ? "" : mark.floor;
+    if (markFloor !== floor) continue;
+    if (mark.kind === "turn" || mark.kind === "node") continue;
+    features.push({
+      type: "Feature",
+      properties: {
+        kind: mark.kind,
+        nodeId: mark.nodeId,
+        nameJa: mark.nameJa,
+        current: mark.nodeId === currentNodeId ? 1 : 0,
+      },
+      geometry: { type: "Point", coordinates: [mark.lng, mark.lat] },
+    });
+  }
+  return { type: "FeatureCollection", features };
+}
+
+function hereCollection(
+  map: RouteMapData,
+  floor: string,
+  fromNodeId: string | null,
+  toNodeId: string | null,
+  currentNodeId: string | null,
+  between: boolean,
+): GeoJSON.FeatureCollection {
+  const here = hereLngLat(map, floor, fromNodeId, toNodeId, currentNodeId, between);
+  if (!here) return emptyCollection();
+  const features: GeoJSON.Feature[] = [];
+  features.push({
+    type: "Feature",
+    properties: {},
+    geometry: { type: "Point", coordinates: here },
+  });
+  return { type: "FeatureCollection", features };
 }
 
 function setSource(map: MapLibreMap, id: string, data: GeoJSON.FeatureCollection) {
@@ -258,6 +280,7 @@ function addRouteLayers(map: MapLibreMap) {
   map.addSource("focus", { type: "geojson", data: emptyCollection() });
   map.addSource("connectors", { type: "geojson", data: emptyCollection() });
   map.addSource("marks", { type: "geojson", data: emptyCollection() });
+  map.addSource("here", { type: "geojson", data: emptyCollection() });
   map.addLayer({
     id: "route-line",
     type: "line",
@@ -316,6 +339,17 @@ function addRouteLayers(map: MapLibreMap) {
       "circle-radius": ["case", ["==", ["get", "current"], 1], 7, 5],
       "circle-stroke-width": ["case", ["==", ["get", "current"], 1], 3, 1.5],
       "circle-stroke-color": ["case", ["==", ["get", "current"], 1], "#303d48", "#ffffff"],
+    },
+  });
+  map.addLayer({
+    id: "here-circle",
+    type: "circle",
+    source: "here",
+    paint: {
+      "circle-color": "#303d48",
+      "circle-radius": 6,
+      "circle-stroke-width": 2,
+      "circle-stroke-color": "#ffffff",
     },
   });
 }
@@ -450,7 +484,7 @@ function fitSegment(
     height: Math.max(root.clientHeight, 1),
   });
   if (camera) {
-    setSource(map, "focus", focusCollection(camera.focus));
+    setSource(map, "focus", emptyCollection());
     const host = root.parentElement;
     if (host instanceof HTMLElement) {
       host.dataset.cameraZoom = camera.zoom.toFixed(2);
@@ -461,7 +495,7 @@ function fitSegment(
   }
   const mark = data.marks.find((row) => (row.floor ?? "") === floor) ?? data.marks[0];
   if (!mark || !Number.isFinite(mark.lng) || !Number.isFinite(mark.lat)) return;
-  applyCamera(map, { center: [mark.lng, mark.lat], zoom: 19.1, bearing: 0, pitch: 50 }, 0);
+  applyCamera(map, { center: [mark.lng, mark.lat], zoom: 17.2, bearing: 0, pitch: 50 }, 0);
 }
 
 export function RouteMap({
@@ -470,6 +504,7 @@ export function RouteMap({
   currentNodeId = null,
   fromNodeId = null,
   toNodeId = null,
+  hereBetween = false,
   attributionJa,
   onFloorChange,
 }: RouteMapProps) {
@@ -496,7 +531,7 @@ export function RouteMap({
             type: "raster",
             tiles: ["https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png"],
             tileSize: 256,
-            attribution: "地理院タイル",
+            attribution: "",
             bounds: [139.694, 35.685, 139.708, 35.698],
           },
           mapMask: { type: "geojson", data: emptyCollection() },
@@ -520,13 +555,11 @@ export function RouteMap({
         ],
       },
       center: [139.7002, 35.6909],
-      zoom: 19.4,
+      zoom: 17.8,
       pitch: 50,
       bearing: 0,
       maxPitch: 70,
-      attributionControl: attributionJa
-        ? { compact: true, customAttribution: attributionJa }
-        : { compact: true },
+      attributionControl: false,
     });
     mapRef.current = map;
     let cancelled = false;
@@ -556,6 +589,7 @@ export function RouteMap({
           setSource(map, "route", routeCollection(current, floor));
           setSource(map, "connectors", connectorCollection(current, floor));
           setSource(map, "marks", markCollection(current, floor, currentNodeId));
+          setSource(map, "here", hereCollection(current, floor, fromNodeId, toNodeId, currentNodeId, hereBetween));
           applyFloor(map, indoorRef.current, floor);
           map.resize();
           fitSegment(map, current, floor, fromNodeId, toNodeId);
@@ -600,12 +634,13 @@ export function RouteMap({
       setSource(map, "route", routeCollection(current, floor));
       setSource(map, "connectors", connectorCollection(current, floor));
       setSource(map, "marks", markCollection(current, floor, currentNodeId));
+      setSource(map, "here", hereCollection(current, floor, fromNodeId, toNodeId, currentNodeId, hereBetween));
       applyFloor(map, indoorRef.current, floor);
       fitSegment(map, current, floor, fromNodeId, toNodeId);
     } catch {
       // 手順切り替えで例外が出ても地図は残す。
     }
-  }, [floor, pathKey, currentNodeId, fromNodeId, toNodeId]);
+  }, [floor, pathKey, currentNodeId, fromNodeId, toNodeId, hereBetween]);
 
   return (
     <div className={stylexClassName(styles.root)}>

@@ -388,6 +388,16 @@ export function focusSegment(
   return { fromNodeId: prevFocusNodeId(rows, i), toNodeId: here.nodeId };
 }
 
+/** 直進の手順 = 手前の節と次の節のあいだ。 */
+export function isBetweenNodes(rows: readonly PathRow[], currentIndex: number): boolean {
+  if (rows.length === 0) return false;
+  const i = Math.min(Math.max(currentIndex, 0), rows.length - 1);
+  const here = rows[i]!;
+  if (here.Kind !== "Move" || here.Icon !== "Straight") return false;
+  const segment = focusSegment(rows, i);
+  return segment.fromNodeId !== null && segment.toNodeId !== null && segment.fromNodeId !== segment.toNodeId;
+}
+
 /** 自分の改札→集合と、集合→出口を 1 本の地図にする。 */
 export function mapOfRoute(route: RouteResponse, participantId: string): RouteMap | null {
   if (!route.map) return null;

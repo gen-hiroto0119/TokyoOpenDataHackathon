@@ -10,7 +10,7 @@ import { Icon } from "../components/Icon.js";
 import { Path } from "../components/Path.js";
 import { RouteMap } from "../components/RouteMap.js";
 import { TabBar, type TabBarSelected } from "../components/TabBar.js";
-import { displayFloorLabel, focusSegment, rowIndexOfNode, type PathRow } from "../route-view.js";
+import { displayFloorLabel, focusSegment, isBetweenNodes, rowIndexOfNode, type PathRow } from "../route-view.js";
 
 /** Storybook / props 未指定時のフォールバック。実データは RoomPage が渡す。 */
 const DEFAULT_ROWS: readonly PathRow[] = [
@@ -340,6 +340,7 @@ export function RouteGuide({
           currentNodeId={currentRow?.nodeId ?? null}
           fromNodeId={focusSegment(rows, onHandoff ? lastPathIndex : current).fromNodeId}
           toNodeId={focusSegment(rows, onHandoff ? lastPathIndex : current).toNodeId}
+          hereBetween={isBetweenNodes(rows, onHandoff ? lastPathIndex : current)}
           attributionJa={attributionJa}
           onFloorChange={(next) => setPickedFloor(next)}
         />

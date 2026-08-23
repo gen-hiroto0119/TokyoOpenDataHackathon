@@ -4,9 +4,9 @@ import type { RouteMap, RouteMapPoint } from "worker/src/contract.js";
 
 export type LngLat = [number, number];
 
-const MIN_SPAN_M = 18;
-const MIN_ZOOM = 19.1;
-const MAX_ZOOM = 21.0;
+const MIN_SPAN_M = 48;
+const MIN_ZOOM = 17.2;
+const MAX_ZOOM = 18.4;
 const M_PER_PX_Z0 = 156543.03392;
 
 function pointsOf(map: RouteMap): RouteMapPoint[] {
@@ -130,6 +130,53 @@ function polylineLengthM(coords: readonly LngLat[]): number {
   return sum;
 }
 
+function polylineMidpoint(coords: readonly LngLat[]): LngLat | null {
+  const usable: LngLat[] = [];
+  for (const row of coords) {
+    if (Number.isFinite(row[0]) && Number.isFinite(row[1])) usable.push(row);
+  }
+  if (usable.length === 0) return null;
+  if (usable.length === 1) return usable[0]!;
+  const total = polylineLengthM(usable);
+  if (!(total > 0)) return usable[0]!;
+  const target = total / 2;
+  let acc = 0;
+  for (let i = 1; i < usable.length; i++) {
+    const a = usable[i - 1]!;
+    const b = usable[i]!;
+    const d = haversineM(a, b);
+    if (acc + d >= target) {
+      const t = d === 0 ? 0 : (target - acc) / d;
+      const lng = a[0] + (b[0] - a[0]) * t;
+      const lat = a[1] + (b[1] - a[1]) * t;
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return a;
+      return [lng, lat];
+    }
+    acc += d;
+  }
+  return usable[usable.length - 1]!;
+}
+
+/** 直進中は区間の中央、節の上にいるときはその節。 */
+export function hereLngLat(
+  map: RouteMap,
+  floor: string,
+  fromNodeId: string | null,
+  toNodeId: string | null,
+  currentNodeId: string | null,
+  between: boolean,
+): LngLat | null {
+  if (between) {
+    const mid = polylineMidpoint(focusCoords(map, floor, fromNodeId, toNodeId));
+    if (mid) return mid;
+    const ends = travelEnds(map, fromNodeId, toNodeId);
+    if (ends) return polylineMidpoint([ends.from, ends.to]);
+  }
+  const node = resolvePoint(map, currentNodeId) ?? resolvePoint(map, toNodeId) ?? resolvePoint(map, fromNodeId);
+  if (node) return [node.lng, node.lat];
+  return polylineMidpoint(focusCoords(map, floor, fromNodeId, toNodeId));
+}
+
 export function zoomForMeters(meters: number, sizePx: number, lat: number): number {
   const span = Math.max(meters, MIN_SPAN_M);
   const px = Math.max(sizePx, 1);
@@ -182,17 +229,13 @@ export function segmentCamera(
           (coords[0]![1] + coords[coords.length - 1]![1]) / 2,
         ];
   if (!Number.isFinite(mid[0]) || !Number.isFinite(mid[1])) return null;
-  const padded =
-    along < MIN_SPAN_M
-      ? [destination(mid, heading, MIN_SPAN_M / 2), destination(mid, heading + 180, MIN_SPAN_M / 2)]
-      : coords;
-  const zoom = zoomForMeters(Math.max(along, MIN_SPAN_M), Math.max(size.height, 1) * 0.64, mid[1]);
+  const zoom = zoomForMeters(Math.max(along, MIN_SPAN_M), Math.max(size.height, 1) * 0.42, mid[1]);
   const bearing = Number.isFinite(heading) ? heading : 0;
   return {
     center: mid,
     zoom,
     bearing,
     pitch: 50,
-    focus: padded,
+    focus: coords,
   };
 }
